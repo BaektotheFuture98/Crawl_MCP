@@ -8,7 +8,7 @@
 - 작업 브랜치: `feature/crawling-mcp`
 - 기준 브랜치: `main`
 - 작업 worktree: `/Users/seonminbaek/openup/mcp_crawl/python-crawling-mcp/.worktrees/crawling-mcp`
-- 이 문서 직전 구현 체크포인트: `38bcb95`
+- 이 문서 직전 구현 체크포인트: `642b7b9`
 
 재개할 때 먼저 실행한다.
 
@@ -45,6 +45,10 @@ git fetch origin
 ## 최근 Conventional Commits
 
 ```text
+642b7b9 docs: document crawl resource ceilings
+7abcf90 fix(artifacts): preserve concurrent failure diagnostics
+aaab84f fix(security): bound crawl resource consumption
+319db8d docs: update verified implementation checkpoint
 38bcb95 docs: sync runtime limits and security controls
 f30772b fix(crawler): retry transient browser failures
 eeccfbf fix(storage): avoid blocking repository lookups
@@ -64,10 +68,10 @@ d815863 fix(auth): serialize session refresh and preserve failures
 ```text
 uv sync --locked: passed (Python 3.12.12, 77 packages audited)
 uv run ruff check .: passed
-uv run ruff format --check .: passed (80 files)
+uv run ruff format --check .: passed (83 files)
 uv run mypy src: passed (51 source files)
-uv run pytest: 93 passed, 16 deselected
-uv run pytest -m integration: 16 passed, 93 deselected
+uv run pytest: 99 passed, 20 deselected
+uv run pytest -m integration: 20 passed, 99 deselected
 docker compose config --quiet: passed
 docker compose test override config --quiet: passed
 docker compose build: passed
@@ -75,8 +79,9 @@ docker compose run --rm -T mcp-server: passed (STDIO start and clean EOF shutdow
 ```
 
 통합 테스트는 공개 수집, 로그인, 저장 세션 재사용, 만료 후 재로그인, 목록·상세 탐색,
-max pages/depth/concurrency, robots.txt, include/exclude·중복 제거, transient 5xx retry,
-실패 artifact, redirect 및 browser subresource SSRF를 포함한다.
+max pages/depth/concurrency, robots.txt와 5xx fail-closed, include/exclude·중복 제거,
+transient 5xx retry, response/link 크기 제한, 실패 artifact, redirect 및 browser subresource
+SSRF, egress byte/deadline/handler cleanup을 포함한다.
 
 ## 독립 리뷰 조치 내역
 
@@ -92,6 +97,12 @@ max pages/depth/concurrency, robots.txt, include/exclude·중복 제거, transie
 - artifact 실패가 원본 오류를 대체: 전체 capture를 best-effort 처리
 - item 수와 page 수 혼용: page outcome count를 별도 저장
 - transport validation bypass: FastMCP 경계의 구조화 오류 변환 추가
+- AUTO probe robots 선행 위반: probe 전 robots 확인, HTTP/browser와 동일 정책 적용
+- 응답·링크 크기 무제한: content, link, egress connection byte 상한 적용
+- `final_url` query secret 노출: `_url`/`_uri` 계열 로그 필드 전체 URL redaction
+- 다수 DNS 답변과 누적 connect timeout: answer 상한과 전체 connect deadline 적용
+- proxy 종료 시 활성 handler 잔류: handler 추적·취소 후 listener 종료
+- 동시 실패 artifact 덮어쓰기: 최초 표준 경로와 이후 고유 failure 하위 경로 사용
 
 ## 남은 절차
 
