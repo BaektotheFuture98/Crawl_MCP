@@ -4,20 +4,27 @@ import logging
 import sys
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import structlog
 from structlog.typing import EventDict, WrappedLogger
 
 _SENSITIVE_KEYS = {
     "authorization",
+    "proxy_authorization",
     "cookie",
     "cookies",
     "password",
     "passwd",
     "secret",
     "storage_state",
+    "set_cookie",
     "token",
+    "access_token",
+    "refresh_token",
+    "api_key",
+    "x_api_key",
+    "client_secret",
 }
 _REDACTED = "***REDACTED***"
 
@@ -30,15 +37,30 @@ def _mask_url(value: str) -> str:
     if parts.scheme not in {"http", "https"}:
         return value
     query = [
-        (key, _REDACTED if key.lower() in _SENSITIVE_KEYS else item)
+        (key, _REDACTED if _normalized_key(key) in _SENSITIVE_KEYS else item)
         for key, item in parse_qsl(parts.query, keep_blank_values=True)
     ]
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+    netloc = parts.netloc
+    if parts.username is not None:
+        hostname = parts.hostname or ""
+        display_host = f"[{hostname}]" if ":" in hostname else hostname
+        try:
+            port = parts.port
+        except ValueError:
+            port = None
+        if port is not None:
+            display_host = f"{display_host}:{port}"
+        netloc = f"{quote(_REDACTED, safe='')}@{display_host}"
+    return urlunsplit((parts.scheme, netloc, parts.path, urlencode(query), parts.fragment))
+
+
+def _normalized_key(key: str) -> str:
+    return key.strip().lower().replace("-", "_")
 
 
 def mask_sensitive(value: Any, *, parent_key: str = "") -> Any:
     """Recursively redact sensitive fields and URL query values."""
-    if parent_key.lower() in _SENSITIVE_KEYS:
+    if _normalized_key(parent_key) in _SENSITIVE_KEYS:
         return _REDACTED
     if isinstance(value, Mapping):
         return {key: mask_sensitive(item, parent_key=str(key)) for key, item in value.items()}

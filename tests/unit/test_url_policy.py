@@ -40,6 +40,15 @@ def test_normalize_url_rejects_ipv6_zone_identifiers() -> None:
         normalize_url("http://[fe80::1%25en0]/")
 
 
+@pytest.mark.parametrize(
+    "url",
+    ["https://example.com/line\nbreak", "https://exa\tmple.com/", "https://example.com/\x00"],
+)
+def test_normalize_url_rejects_control_characters(url: str) -> None:
+    with pytest.raises(InvalidUrlError):
+        normalize_url(url)
+
+
 def test_link_policy_applies_domain_depth_and_patterns() -> None:
     policy = LinkPolicy(
         start_url="https://example.com/start",

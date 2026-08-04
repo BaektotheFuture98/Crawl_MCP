@@ -12,6 +12,8 @@ _TRACKING_KEYS = {"fbclid", "gclid", "dclid", "msclkid"}
 
 def normalize_url(url: str, *, remove_tracking: bool = True) -> str:
     """Normalize a URL for validation and de-duplication."""
+    if any(ord(character) < 32 or ord(character) == 127 for character in url):
+        raise InvalidUrlError(reason="control_character_not_allowed")
     try:
         parts = urlsplit(url)
         port = parts.port
