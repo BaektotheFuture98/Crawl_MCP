@@ -15,12 +15,14 @@ class FileRepository(InMemoryRepository):
     def __init__(self, root: Path) -> None:
         super().__init__()
         self._root = root
+        self._file_lock = asyncio.Lock()
 
     async def _persist(self, job_id: UUID) -> None:
-        job = await super().get_job(job_id)
-        if job is None:
-            return
-        await asyncio.to_thread(self._write_atomic, job)
+        async with self._file_lock:
+            job = await super().get_job(job_id)
+            if job is None:
+                return
+            await asyncio.to_thread(self._write_atomic, job)
 
     def _write_atomic(self, job: CrawlResult) -> None:
         self._root.mkdir(parents=True, exist_ok=True)
