@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -11,11 +12,12 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="CRAWLING_MCP_", env_file=".env", extra="ignore")
 
-    log_level: str = "INFO"
-    repository: str = "file"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    repository: Literal["memory", "file"] = "file"
     data_dir: Path = Path("data")
     auth_profiles_path: Path = Path("config/auth_profiles.yaml")
     allow_private_networks: bool = False
     domain_allowlist: list[str] = Field(default_factory=list)
     browser_headless: bool = True
     browser_max_contexts: int = Field(default=3, ge=1, le=20)
+    test_site_base_url: str = "http://127.0.0.1:8765"

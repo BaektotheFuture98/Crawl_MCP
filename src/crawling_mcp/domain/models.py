@@ -150,3 +150,12 @@ class SupportedSite(BaseModel):
     domain: str
     authentication: str
     extractor: str
+
+
+class ArtifactPaths(BaseModel):
+    """Paths to failure diagnostics captured for a job."""
+
+    error_json: str
+    html: str | None = None
+    screenshot: str | None = None
+    accessibility_snapshot: str | None = None
