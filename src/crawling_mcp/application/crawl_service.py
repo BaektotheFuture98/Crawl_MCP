@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 
+import structlog
+
 from crawling_mcp.domain.errors import (
     AuthenticationRequiredError,
+    CrawlError,
     ExtractionError,
     NavigationError,
 )
@@ -38,6 +41,7 @@ class CrawlService:
         self._extractors = extractors
         self._repository = repository
         self._auth = auth
+        self._log = structlog.get_logger(__name__)
 
     async def _scrape_with_context(
         self,
@@ -49,7 +53,9 @@ class CrawlService:
             return await engine.scrape(request, context)
         if self._auth is None:
             raise AuthenticationRequiredError(reason="auth_service_not_configured")
-        async with self._auth.context_for(context.domain, request.auth_profile) as browser_context:
+        async with self._auth.context_for(
+            context.domain, request.auth_profile, context.job_id
+        ) as browser_context:
             context.authenticated = True
             context.browser_context = browser_context
             return await engine.scrape(request, context)
@@ -64,7 +70,9 @@ class CrawlService:
             return await engine.crawl(request, context)
         if self._auth is None:
             raise AuthenticationRequiredError(reason="auth_service_not_configured")
-        async with self._auth.context_for(context.domain, request.auth_profile) as browser_context:
+        async with self._auth.context_for(
+            context.domain, request.auth_profile, context.job_id
+        ) as browser_context:
             context.authenticated = True
             context.browser_context = browser_context
             return await engine.crawl(request, context)
@@ -76,6 +84,13 @@ class CrawlService:
         extractor = self._extractors.get(validated.hostname, authenticated=authenticated)
         engine = self._factory.get(request.crawl_mode, authenticated=authenticated)
         context = CrawlContext(domain=validated.hostname, adapter_name=extractor.name)
+        log_context = {
+            "job_id": str(context.job_id),
+            "url": validated.url,
+            "domain": validated.hostname,
+            "adapter_name": extractor.name,
+        }
+        self._log.info("scrape_started", **log_context)
         safe_request = request.model_copy(update={"url": validated.url})
         try:
             snapshot = await asyncio.wait_for(
@@ -83,11 +98,16 @@ class CrawlService:
                 timeout=request.request_timeout_seconds,
             )
         except TimeoutError as error:
+            self._log.warning("scrape_failed", error_code="NAVIGATION_ERROR", **log_context)
             raise NavigationError(url=validated.url, reason="request_timeout") from error
+        except CrawlError as error:
+            self._log.warning("scrape_failed", error_code=error.code, **log_context)
+            raise
         await self._validator.validate(snapshot.url)
         items = await extractor.extract(snapshot)
         if not items:
             raise ExtractionError(url=snapshot.url, reason="no_items")
+        self._log.info("scrape_completed", final_url=snapshot.url, **log_context)
         return items[0]
 
     async def crawl_site(self, request: CrawlRequest) -> CrawlResult:
@@ -97,6 +117,13 @@ class CrawlService:
         extractor = self._extractors.get(validated.hostname, authenticated=authenticated)
         engine = self._factory.get(request.crawl_mode, authenticated=authenticated)
         context = CrawlContext(domain=validated.hostname, adapter_name=extractor.name)
+        log_context = {
+            "job_id": str(context.job_id),
+            "url": validated.url,
+            "domain": validated.hostname,
+            "adapter_name": extractor.name,
+        }
+        self._log.info("crawl_started", **log_context)
         initial = CrawlResult(job_id=context.job_id, start_url=validated.url)
         await self._repository.start_job(initial)
         safe_request = request.model_copy(update={"start_url": validated.url})
@@ -106,7 +133,11 @@ class CrawlService:
                 timeout=request.job_timeout_seconds,
             )
         except TimeoutError as error:
+            self._log.warning("crawl_failed", error_code="NAVIGATION_ERROR", **log_context)
             raise NavigationError(url=validated.url, reason="job_timeout") from error
+        except CrawlError as error:
+            self._log.warning("crawl_failed", error_code=error.code, **log_context)
+            raise
         for item in result.items:
             await self._repository.save_page(context.job_id, item)
         for failure in result.failures:
@@ -115,6 +146,13 @@ class CrawlService:
         stored = await self._repository.get_job(context.job_id)
         if stored is None:
             raise NavigationError(url=validated.url, reason="result_not_persisted")
+        self._log.info(
+            "crawl_completed",
+            visited_pages=stored.visited_pages,
+            succeeded_pages=stored.succeeded_pages,
+            failed_pages=stored.failed_pages,
+            **log_context,
+        )
         return stored
 
     async def close(self) -> None:
