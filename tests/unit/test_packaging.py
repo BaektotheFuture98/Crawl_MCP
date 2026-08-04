@@ -22,6 +22,19 @@ def test_compose_declares_services_and_isolated_data_volumes() -> None:
         "failures-data:/app/data/failures",
         "screenshots-data:/app/data/screenshots",
     }
+    mcp = compose["services"]["mcp-server"]
+    assert mcp["environment"]["CRAWLING_MCP_ALLOW_PRIVATE_NETWORKS"] == "false"
+    assert "depends_on" not in mcp
+    assert compose["services"]["test-site"]["profiles"] == ["test"]
+
+
+def test_test_compose_override_scopes_private_access_to_test_site() -> None:
+    override = yaml.safe_load(Path("docker-compose.test.yml").read_text(encoding="utf-8"))
+
+    mcp = override["services"]["mcp-server"]
+    assert mcp["environment"]["CRAWLING_MCP_ALLOW_PRIVATE_NETWORKS"] == "true"
+    assert mcp["environment"]["CRAWLING_MCP_DOMAIN_ALLOWLIST"] == '["test-site"]'
+    assert mcp["depends_on"]["test-site"]["condition"] == "service_healthy"
 
 
 def test_dockerfile_uses_matching_playwright_image_and_non_root_user() -> None:

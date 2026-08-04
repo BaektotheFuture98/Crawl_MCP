@@ -8,15 +8,8 @@ services:
       - path: .env
         required: false
     environment:
-      CRAWLING_MCP_ALLOW_PRIVATE_NETWORKS: "true"
-      CRAWLING_MCP_AUTH_PROFILES_PATH: config/auth_profiles.docker.yaml
-      CRAWLING_MCP_TEST_SITE_BASE_URL: http://test-site:8765
-      TEST_SITE_USERNAME: ${TEST_SITE_USERNAME:-test-user}
-      TEST_SITE_PASSWORD: ${TEST_SITE_PASSWORD:-test-password}
+      CRAWLING_MCP_ALLOW_PRIVATE_NETWORKS: "false"
     stdin_open: true
-    depends_on:
-      test-site:
-        condition: service_healthy
     volumes:
       - auth-data:/app/data/auth
       - results-data:/app/data/results
@@ -24,6 +17,7 @@ services:
       - screenshots-data:/app/data/screenshots
 
   test-site:
+    profiles: ["test"]
     build:
       context: .
     entrypoint: ["/app/.venv/bin/python", "-m", "crawling_mcp.test_site"]

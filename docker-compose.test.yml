@@ -1,0 +1,12 @@
+services:
+  mcp-server:
+    environment:
+      CRAWLING_MCP_ALLOW_PRIVATE_NETWORKS: "true"
+      CRAWLING_MCP_DOMAIN_ALLOWLIST: '["test-site"]'
+      CRAWLING_MCP_AUTH_PROFILES_PATH: config/auth_profiles.docker.yaml
+      CRAWLING_MCP_TEST_SITE_BASE_URL: http://test-site:8765
+      TEST_SITE_USERNAME: ${TEST_SITE_USERNAME:-test-user}
+      TEST_SITE_PASSWORD: ${TEST_SITE_PASSWORD:-test-password}
+    depends_on:
+      test-site:
+        condition: service_healthy

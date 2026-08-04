@@ -67,11 +67,17 @@ uv run python -m crawling_mcp.test_site
 ```bash
 cp .env.example .env
 docker compose build
-docker compose up test-site
 docker compose run --rm -T mcp-server
 ```
 
-Compose의 private-network 허용은 함께 제공되는 `test-site` 전용입니다. 인터넷 대상 운영 배포에서는 `CRAWLING_MCP_ALLOW_PRIVATE_NETWORKS=false`를 유지하십시오. 인증, 결과, 실패, 스크린샷 디렉터리는 각각 별도 named volume입니다. 이미지는 비-root `crawling` 사용자로 실행됩니다.
+기본 Compose는 사설망 접근을 차단하며 테스트 사이트를 시작하지 않습니다. 로컬 Docker 인증 예제는 명시적인 test override와 profile로 실행합니다.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.test.yml --profile test up -d test-site
+docker compose -f docker-compose.yml -f docker-compose.test.yml --profile test run --rm -T mcp-server
+```
+
+test override는 private-network 허용과 domain allowlist를 `test-site` 하나로 함께 제한합니다. 인터넷 대상 운영 배포에서는 기본 `CRAWLING_MCP_ALLOW_PRIVATE_NETWORKS=false`를 유지하십시오. 인증, 결과, 실패, 스크린샷 디렉터리는 각각 별도 named volume입니다. 이미지는 비-root `crawling` 사용자로 실행됩니다.
 
 ## MCP Client 연결
 
