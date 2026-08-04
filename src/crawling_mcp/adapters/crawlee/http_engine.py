@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+from typing import cast
 from urllib.parse import urljoin
 
 from crawlee import ConcurrencySettings, Request
 from crawlee._types import BasicCrawlingContext
 from crawlee.crawlers import BeautifulSoupCrawler, BeautifulSoupCrawlingContext
+from crawlee.proxy_configuration import ProxyConfiguration
 from crawlee.storages import RequestQueue
 
 from crawling_mcp.adapters.crawlee.router import PageRouter
@@ -23,6 +25,7 @@ from crawling_mcp.domain.models import (
 from crawling_mcp.domain.policies import LinkPolicy, normalize_url
 from crawling_mcp.ports.crawler import UrlValidator
 from crawling_mcp.ports.extractor import ExtractorResolver
+from crawling_mcp.ports.network import EgressProxyPort
 
 
 class HttpCrawlerEngine:
@@ -34,10 +37,17 @@ class HttpCrawlerEngine:
         validator: UrlValidator,
         extractors: ExtractorResolver,
         router: PageRouter | None = None,
+        egress_proxy: EgressProxyPort | None = None,
     ) -> None:
         self._validator = validator
         self._extractors = extractors
         self._router = router or PageRouter()
+        self._egress_proxy = egress_proxy
+
+    def _proxy_configuration(self) -> ProxyConfiguration | None:
+        if self._egress_proxy is None:
+            return None
+        return ProxyConfiguration(proxy_urls=[self._egress_proxy.url])
 
     @staticmethod
     def _snapshot(context: BeautifulSoupCrawlingContext, *, depth: int) -> PageSnapshot:
@@ -62,6 +72,7 @@ class HttpCrawlerEngine:
             max_request_retries=0,
             request_handler_timeout=timedelta(seconds=request.request_timeout_seconds),
             request_manager=request_queue,
+            proxy_configuration=cast(ProxyConfiguration, self._proxy_configuration()),
         )
 
         @crawler.router.default_handler
@@ -100,6 +111,7 @@ class HttpCrawlerEngine:
             request_handler_timeout=timedelta(seconds=request.request_timeout_seconds),
             respect_robots_txt_file=request.respect_robots_txt,
             request_manager=request_queue,
+            proxy_configuration=cast(ProxyConfiguration, self._proxy_configuration()),
             concurrency_settings=ConcurrencySettings(
                 max_concurrency=request.max_concurrency,
                 desired_concurrency=request.max_concurrency,

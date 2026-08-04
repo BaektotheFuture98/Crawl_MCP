@@ -8,6 +8,8 @@ from typing import Any
 
 from playwright.async_api import Browser, BrowserContext, Playwright, async_playwright
 
+from crawling_mcp.ports.network import EgressProxyPort
+
 PlaywrightFactory = Callable[[], Any]
 
 
@@ -20,10 +22,12 @@ class BrowserManager:
         headless: bool = True,
         max_contexts: int = 3,
         playwright_factory: PlaywrightFactory = async_playwright,
+        egress_proxy: EgressProxyPort | None = None,
     ) -> None:
         self._headless = headless
         self._semaphore = asyncio.Semaphore(max_contexts)
         self._factory = playwright_factory
+        self._egress_proxy = egress_proxy
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
         self._lock = asyncio.Lock()
@@ -34,7 +38,20 @@ class BrowserManager:
             if self._browser is not None:
                 return
             self._playwright = await self._factory().start()
-            self._browser = await self._playwright.chromium.launch(headless=self._headless)
+            launch_options: dict[str, Any] = {"headless": self._headless}
+            if self._egress_proxy is not None:
+                launch_options.update(
+                    {
+                        "proxy": {"server": self._egress_proxy.url},
+                        "args": ["--proxy-bypass-list=<-loopback>"],
+                    }
+                )
+            try:
+                self._browser = await self._playwright.chromium.launch(**launch_options)
+            except Exception:
+                await self._playwright.stop()
+                self._playwright = None
+                raise
 
     @asynccontextmanager
     async def context(self, storage_state: Path | None = None) -> AsyncIterator[BrowserContext]:

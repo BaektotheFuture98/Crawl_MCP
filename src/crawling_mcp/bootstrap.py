@@ -26,6 +26,7 @@ from crawling_mcp.domain.models import (
 from crawling_mcp.infrastructure.artifacts import FailureArtifactWriter
 from crawling_mcp.infrastructure.browser import BrowserManager
 from crawling_mcp.infrastructure.config import Settings
+from crawling_mcp.infrastructure.egress_proxy import SafeEgressProxy
 from crawling_mcp.infrastructure.security import UrlSecurityValidator
 from crawling_mcp.ports.repository import CrawlRepository
 
@@ -37,6 +38,7 @@ class ApplicationContainer:
         self,
         *,
         settings: Settings,
+        egress_proxy: SafeEgressProxy,
         browser: BrowserManager,
         auth_registry: AuthRegistry,
         extractor_registry: ExtractorRegistry,
@@ -44,6 +46,7 @@ class ApplicationContainer:
         crawl_service: CrawlService,
     ) -> None:
         self.settings = settings
+        self.egress_proxy = egress_proxy
         self.browser = browser
         self.auth_registry = auth_registry
         self.extractor_registry = extractor_registry
@@ -55,14 +58,24 @@ class ApplicationContainer:
         """Start the shared Playwright browser once."""
         if self._started:
             return
-        await self.browser.start()
+        await self.egress_proxy.start()
+        try:
+            await self.browser.start()
+        except Exception:
+            await self.egress_proxy.close()
+            raise
         self._started = True
 
     async def close(self) -> None:
         """Close services and the shared browser in dependency order."""
-        await self.crawl_service.close()
-        await self.browser.close()
-        self._started = False
+        try:
+            await self.crawl_service.close()
+        finally:
+            try:
+                await self.browser.close()
+            finally:
+                await self.egress_proxy.close()
+                self._started = False
 
     async def scrape_page(self, request: ScrapePageRequest) -> PageItem:
         """Delegate one-page collection to the application service."""
@@ -97,6 +110,7 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
         domain_allowlist=configured.domain_allowlist,
         allow_private_networks=configured.allow_private_networks,
     )
+    egress_proxy = SafeEgressProxy(validator=validator)
     extractors = ExtractorRegistry(default=GenericExtractor())
     auth_registry = AuthRegistry(default=NoAuthAdapter())
     profiles = AuthProfileStore.from_yaml(configured.auth_profiles_path)
@@ -115,6 +129,7 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
     browser = BrowserManager(
         headless=configured.browser_headless,
         max_contexts=configured.browser_max_contexts,
+        egress_proxy=egress_proxy,
     )
     artifacts = FailureArtifactWriter(configured.data_dir / "failures")
     auth_service = AuthService(
@@ -125,7 +140,12 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
         artifacts=artifacts,
     )
     router = PageRouter()
-    http_engine = HttpCrawlerEngine(validator=validator, extractors=extractors, router=router)
+    http_engine = HttpCrawlerEngine(
+        validator=validator,
+        extractors=extractors,
+        router=router,
+        egress_proxy=egress_proxy,
+    )
     browser_engine = BrowserCrawlerEngine(
         validator=validator,
         extractors=extractors,
@@ -144,6 +164,7 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
     )
     return ApplicationContainer(
         settings=configured,
+        egress_proxy=egress_proxy,
         browser=browser,
         auth_registry=auth_registry,
         extractor_registry=extractors,
