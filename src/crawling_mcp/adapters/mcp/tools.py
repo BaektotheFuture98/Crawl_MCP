@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from typing import Any, Protocol, cast
 
+import structlog
 from mcp.server.fastmcp import FastMCP
+from pydantic import ValidationError
 
 from crawling_mcp.domain.enums import CrawlMode
-from crawling_mcp.domain.errors import CrawlError
+from crawling_mcp.domain.errors import CrawlError, InvalidUrlError, NavigationError
 from crawling_mcp.domain.models import (
     CrawlRequest,
     CrawlResult,
@@ -33,8 +35,14 @@ def _error_payload(error: CrawlError) -> dict[str, Any]:
     return cast(dict[str, Any], mask_sensitive(payload))
 
 
+def _validation_payload(error: ValidationError) -> dict[str, Any]:
+    fields = [".".join(str(part) for part in item["loc"]) for item in error.errors()]
+    return _error_payload(InvalidUrlError(reason="invalid_request", fields=fields))
+
+
 def register_tools(server: FastMCP, application: McpApplication) -> None:
     """Register thin MCP tools that only validate, invoke and serialize."""
+    logger = structlog.get_logger(__name__)
 
     @server.tool()
     async def scrape_page(
@@ -46,6 +54,11 @@ def register_tools(server: FastMCP, application: McpApplication) -> None:
             return (await application.scrape_page(request)).model_dump(mode="json")
         except CrawlError as error:
             return _error_payload(error)
+        except ValidationError as error:
+            return _validation_payload(error)
+        except Exception as error:
+            logger.error("unexpected_scrape_tool_error", error_type=type(error).__name__)
+            return _error_payload(NavigationError(reason="internal_error"))
 
     @server.tool()
     async def crawl_site(
@@ -87,6 +100,11 @@ def register_tools(server: FastMCP, application: McpApplication) -> None:
             return (await application.crawl_site(request)).model_dump(mode="json")
         except CrawlError as error:
             return _error_payload(error)
+        except ValidationError as error:
+            return _validation_payload(error)
+        except Exception as error:
+            logger.error("unexpected_crawl_tool_error", error_type=type(error).__name__)
+            return _error_payload(NavigationError(reason="internal_error"))
 
     @server.tool()
     async def validate_session(auth_profile: str) -> dict[str, Any]:
@@ -96,6 +114,9 @@ def register_tools(server: FastMCP, application: McpApplication) -> None:
             return {"auth_profile": auth_profile, "valid": valid}
         except CrawlError as error:
             return _error_payload(error)
+        except Exception as error:
+            logger.error("unexpected_session_tool_error", error_type=type(error).__name__)
+            return _error_payload(NavigationError(reason="internal_error"))
 
     @server.tool()
     async def list_supported_sites() -> dict[str, Any]:
