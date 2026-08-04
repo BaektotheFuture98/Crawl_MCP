@@ -16,6 +16,7 @@ from crawling_mcp.domain.policies import LinkPolicy, normalize_url
             "https://example.com/p?a=1&b=2",
         ),
         ("https://bücher.example/", "https://xn--bcher-kva.example/"),
+        ("https://[2606:4700:4700::1111]/", "https://[2606:4700:4700::1111]/"),
     ],
 )
 def test_normalize_url_produces_stable_safe_key(raw: str, expected: str) -> None:
@@ -32,6 +33,11 @@ def test_normalize_url_can_keep_tracking_parameters() -> None:
 def test_normalize_url_rejects_forbidden_or_incomplete_urls(url: str) -> None:
     with pytest.raises(InvalidUrlError):
         normalize_url(url)
+
+
+def test_normalize_url_rejects_ipv6_zone_identifiers() -> None:
+    with pytest.raises(InvalidUrlError):
+        normalize_url("http://[fe80::1%25en0]/")
 
 
 def test_link_policy_applies_domain_depth_and_patterns() -> None:

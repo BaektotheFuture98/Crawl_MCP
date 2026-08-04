@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from fnmatch import fnmatch
+from ipaddress import IPv6Address
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from crawling_mcp.domain.errors import InvalidUrlError
@@ -25,8 +26,16 @@ def normalize_url(url: str, *, remove_tracking: bool = True) -> str:
         hostname = parts.hostname.encode("idna").decode("ascii").lower()
     except UnicodeError as error:
         raise InvalidUrlError(reason="invalid_hostname") from error
+    if "%" in hostname:
+        raise InvalidUrlError(reason="ipv6_zone_identifier_not_allowed")
+    try:
+        IPv6Address(hostname)
+    except ValueError:
+        formatted_hostname = hostname
+    else:
+        formatted_hostname = f"[{hostname}]"
     default_port = (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
-    netloc = hostname if port is None or default_port else f"{hostname}:{port}"
+    netloc = formatted_hostname if port is None or default_port else f"{formatted_hostname}:{port}"
     query_items = parse_qsl(parts.query, keep_blank_values=True)
     if remove_tracking:
         query_items = [
