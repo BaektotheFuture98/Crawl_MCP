@@ -228,6 +228,8 @@ data/failures/{job_id}/
 - hostname을 IDNA로 정규화한 뒤 모든 A/AAAA 응답을 검사합니다.
 - loopback, private, link-local, unspecified, multicast, reserved 및 metadata IP를 기본 차단합니다.
 - DNS 응답 중 하나라도 차단 주소면 전체 요청을 거부합니다.
+- 응답 HTML은 운영자 설정 `CRAWLING_MCP_MAX_CONTENT_BYTES` 상한을 넘으면 파싱·추출을 중단합니다.
+- 페이지별 발견 링크 수, DNS 답변 수, egress 연결 시간과 연결별 수신 byte에도 운영자 상한을 적용합니다.
 - 최초 URL, 발견 링크, navigation 직전과 redirect 최종 URL을 다시 검증합니다.
 - HTTP와 Chromium 트래픽은 loopback egress proxy를 통과하며, proxy가 검증된 정확한 IP로 연결합니다. redirect와 iframe·이미지·스크립트 같은 하위 리소스도 같은 정책을 적용받습니다.
 - 선택적 domain allowlist는 private-IP 차단을 우회하지 않습니다.
