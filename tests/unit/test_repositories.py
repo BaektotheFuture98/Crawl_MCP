@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -51,3 +53,22 @@ async def test_file_repository_writes_atomic_valid_json(tmp_path: Path) -> None:
     assert result_file.is_file()
     assert not list((tmp_path / "results").glob("*.tmp"))
     assert CrawlResult.model_validate_json(result_file.read_text())
+
+
+@pytest.mark.asyncio
+async def test_file_repository_checks_disk_without_blocking_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = FileRepository(tmp_path / "results")
+    event_loop_thread = threading.get_ident()
+    observed_threads: list[int] = []
+
+    def fake_is_file(path: Path) -> bool:
+        observed_threads.append(threading.get_ident())
+        return False
+
+    monkeypatch.setattr(Path, "is_file", fake_is_file)
+
+    assert await repository.get_job(uuid4()) is None
+    assert observed_threads
+    assert all(thread_id != event_loop_thread for thread_id in observed_threads)

@@ -74,7 +74,7 @@ class FileRepository(InMemoryRepository):
         if cached is not None:
             return cached
         path = self._root / f"{job_id}.json"
-        if not path.is_file():
+        if not await asyncio.to_thread(path.is_file):
             return None
         text = await asyncio.to_thread(path.read_text, encoding="utf-8")
         loaded = CrawlResult.model_validate_json(text)

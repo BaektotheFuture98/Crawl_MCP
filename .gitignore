@@ -7,7 +7,7 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
-storage/
+/storage/
 .env
 data/auth/*
 data/results/*
