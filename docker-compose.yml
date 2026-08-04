@@ -1,0 +1,52 @@
+services:
+  mcp-server:
+    build:
+      context: .
+    env_file:
+      - path: .env.example
+        required: true
+      - path: .env
+        required: false
+    environment:
+      CRAWLING_MCP_ALLOW_PRIVATE_NETWORKS: "true"
+      CRAWLING_MCP_AUTH_PROFILES_PATH: config/auth_profiles.docker.yaml
+      CRAWLING_MCP_TEST_SITE_BASE_URL: http://test-site:8765
+      TEST_SITE_USERNAME: ${TEST_SITE_USERNAME:-test-user}
+      TEST_SITE_PASSWORD: ${TEST_SITE_PASSWORD:-test-password}
+    stdin_open: true
+    depends_on:
+      test-site:
+        condition: service_healthy
+    volumes:
+      - auth-data:/app/data/auth
+      - results-data:/app/data/results
+      - failures-data:/app/data/failures
+      - screenshots-data:/app/data/screenshots
+
+  test-site:
+    build:
+      context: .
+    entrypoint: ["/app/.venv/bin/python", "-m", "crawling_mcp.test_site"]
+    environment:
+      TEST_SITE_USERNAME: ${TEST_SITE_USERNAME:-test-user}
+      TEST_SITE_PASSWORD: ${TEST_SITE_PASSWORD:-test-password}
+      TEST_SITE_PORT: "8765"
+    ports:
+      - "8765:8765"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/app/.venv/bin/python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health')",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  auth-data:
+  results-data:
+  failures-data:
+  screenshots-data:

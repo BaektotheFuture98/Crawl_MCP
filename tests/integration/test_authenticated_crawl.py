@@ -39,6 +39,7 @@ def make_auth_stack(
     tmp_path: Path,
     *,
     secrets: FixedSecrets | None = None,
+    login_variant: str | None = None,
 ) -> tuple[BrowserManager, AuthService, BrowserCrawlerEngine, Path]:
     state_path = tmp_path / "auth" / "reader.json"
     profile = AuthProfile(
@@ -49,7 +50,7 @@ def make_auth_stack(
         storage_state_path=str(state_path),
     )
     auth_registry = AuthRegistry(default=NoAuthAdapter())
-    auth_registry.register("127.0.0.1", ExampleLoginAdapter(base_url))
+    auth_registry.register("127.0.0.1", ExampleLoginAdapter(base_url, login_variant=login_variant))
     extractors = ExtractorRegistry(default=GenericExtractor())
     extractors.register("127.0.0.1", ExampleExtractor())
     browser = BrowserManager(headless=True, max_contexts=2)
@@ -163,5 +164,21 @@ async def test_invalid_login_credentials_return_domain_error(
         with pytest.raises(AuthenticationFailedError):
             async with auth.context_for("127.0.0.1", "reader"):
                 pass
+    finally:
+        await browser.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_missing_login_ui_returns_authentication_failure(
+    test_site_url: str, tmp_path: Path
+) -> None:
+    browser, auth, _, _ = make_auth_stack(test_site_url, tmp_path, login_variant="missing")
+    await browser.start()
+    try:
+        with pytest.raises(AuthenticationFailedError) as error:
+            async with auth.context_for("127.0.0.1", "reader"):
+                pass
+        assert error.value.details["reason"] == "locator_not_found"
     finally:
         await browser.close()

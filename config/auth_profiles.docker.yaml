@@ -1,0 +1,8 @@
+profiles:
+  example-reader:
+    domain: test-site
+    adapter: example_login
+    username_env: TEST_SITE_USERNAME
+    password_env: TEST_SITE_PASSWORD
+    storage_state_path: data/auth/example-reader.json
+

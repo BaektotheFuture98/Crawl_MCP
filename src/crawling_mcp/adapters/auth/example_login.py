@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import Protocol
+from urllib.parse import urlencode
 
 from playwright.async_api import BrowserContext, Locator
 
@@ -36,8 +37,9 @@ class ExampleLoginAdapter:
 
     name = "form_login"
 
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, *, login_variant: str | None = None) -> None:
         self._base_url = base_url.rstrip("/")
+        self._login_variant = login_variant
 
     async def is_authenticated(self, context: BrowserContext) -> bool:
         """Validate the session by observing the protected page after navigation."""
@@ -53,7 +55,10 @@ class ExampleLoginAdapter:
         """Log in using resilient candidate locators and verify success."""
         page = await context.new_page()
         try:
-            await page.goto(f"{self._base_url}/test-site/login", wait_until="domcontentloaded")
+            login_url = f"{self._base_url}/test-site/login"
+            if self._login_variant is not None:
+                login_url = f"{login_url}?{urlencode({'variant': self._login_variant})}"
+            await page.goto(login_url, wait_until="domcontentloaded")
             username: Locator = await choose_usable_locator(
                 [
                     page.get_by_label("아이디"),

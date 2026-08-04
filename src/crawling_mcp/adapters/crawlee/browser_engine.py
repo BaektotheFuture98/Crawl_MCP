@@ -6,7 +6,6 @@ from urllib.parse import urljoin
 from playwright.async_api import BrowserContext, Page
 
 from crawling_mcp.adapters.crawlee.router import PageRouter
-from crawling_mcp.domain.enums import ErrorCode
 from crawling_mcp.domain.errors import CrawlError, NavigationError
 from crawling_mcp.domain.models import (
     CrawlContext,
@@ -18,6 +17,7 @@ from crawling_mcp.domain.models import (
 )
 from crawling_mcp.domain.policies import LinkPolicy, normalize_url
 from crawling_mcp.infrastructure.artifacts import FailureArtifactWriter
+from crawling_mcp.infrastructure.logging import mask_sensitive
 from crawling_mcp.ports.browser import BrowserManagerPort
 from crawling_mcp.ports.crawler import UrlValidator
 from crawling_mcp.ports.extractor import ExtractorResolver
@@ -147,9 +147,9 @@ class BrowserCrawlerEngine:
                 result.failures.append(
                     CrawlFailure(
                         url=url,
-                        error_code=ErrorCode.NAVIGATION_ERROR,
-                        message="페이지에 접속하지 못했습니다.",
-                        details={"error_type": type(error).__name__},
+                        error_code=domain_error.code,
+                        message=domain_error.message,
+                        details=mask_sensitive(domain_error.details),
                         artifacts=artifact_values,
                     )
                 )

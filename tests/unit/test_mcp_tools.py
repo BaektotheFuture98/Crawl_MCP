@@ -14,7 +14,7 @@ from crawling_mcp.domain.models import PageItem, SupportedSite
 class FakeContainer:
     async def scrape_page(self, request: Any) -> PageItem:
         if "blocked" in request.url:
-            raise BlockedUrlError(domain="blocked.example", address="127.0.0.1")
+            raise BlockedUrlError(domain="blocked.example", address="127.0.0.1", password="secret")
         return PageItem(url=request.url, title="Title", content="Body")
 
     async def crawl_site(self, request: Any) -> Any:
@@ -64,7 +64,11 @@ async def test_mcp_tool_maps_domain_error_without_traceback() -> None:
 
     assert result["error_code"] == ErrorCode.BLOCKED_URL
     assert "traceback" not in str(result).lower()
-    assert result["details"] == {"domain": "blocked.example", "address": "127.0.0.1"}
+    assert result["details"] == {
+        "domain": "blocked.example",
+        "address": "127.0.0.1",
+        "password": "***REDACTED***",
+    }
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from mcp.server.fastmcp import FastMCP
 
@@ -13,6 +13,7 @@ from crawling_mcp.domain.models import (
     ScrapePageRequest,
     SupportedSite,
 )
+from crawling_mcp.infrastructure.logging import mask_sensitive
 
 
 class McpApplication(Protocol):
@@ -28,7 +29,8 @@ class McpApplication(Protocol):
 
 
 def _error_payload(error: CrawlError) -> dict[str, Any]:
-    return error.to_response().model_dump(mode="json")
+    payload = error.to_response().model_dump(mode="json")
+    return cast(dict[str, Any], mask_sensitive(payload))
 
 
 def register_tools(server: FastMCP, application: McpApplication) -> None:

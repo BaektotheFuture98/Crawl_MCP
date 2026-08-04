@@ -1,0 +1,15 @@
+.git
+.worktrees
+.venv
+.env
+__pycache__
+.pytest_cache
+.mypy_cache
+.ruff_cache
+storage
+data/auth/*
+data/results/*
+data/failures/*
+data/screenshots/*
+tests
+docs
