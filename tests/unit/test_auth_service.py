@@ -56,6 +56,21 @@ class FakeAdapter:
         self.authenticate_calls += 1
 
 
+class ConcurrentAdapter(FakeAdapter):
+    def __init__(self) -> None:
+        super().__init__([])
+
+    async def is_authenticated(self, context: Any) -> bool:
+        if context.loaded_state is not None:
+            content = context.loaded_state.read_text(encoding="utf-8")
+            return content != "expired"
+        return self.authenticate_calls > 0
+
+    async def authenticate(self, context: Any, credentials: Credentials) -> None:
+        self.authenticate_calls += 1
+        await asyncio.sleep(0.05)
+
+
 class FakeSecrets:
     def credentials(self, username_env: str, password_env: str) -> Credentials:
         return Credentials(username="user", password="secret")
@@ -147,7 +162,7 @@ async def test_auth_service_rejects_profile_adapter_mismatch(tmp_path: Path) -> 
 async def test_auth_service_reauthenticates_expired_state_and_refreshes_file(
     tmp_path: Path,
 ) -> None:
-    adapter = FakeAdapter([False, True])
+    adapter = FakeAdapter([False, False, True])
     service, browser, state = make_service(tmp_path, adapter)
     state.parent.mkdir(parents=True)
     state.write_text("expired", encoding="utf-8")
@@ -155,7 +170,7 @@ async def test_auth_service_reauthenticates_expired_state_and_refreshes_file(
     async with service.context_for("example.com", "reader"):
         pass
 
-    assert browser.loaded_states == [state, None]
+    assert browser.loaded_states == [state, state, None]
     assert adapter.authenticate_calls == 1
     assert state.read_text(encoding="utf-8") == '{"cookies": []}'
 
@@ -168,3 +183,20 @@ async def test_auth_service_rejects_failed_post_login_validation(tmp_path: Path)
     with pytest.raises(AuthenticationFailedError):
         async with service.context_for("example.com", "reader"):
             pass
+
+
+@pytest.mark.asyncio
+async def test_auth_service_serializes_concurrent_session_refresh(tmp_path: Path) -> None:
+    adapter = ConcurrentAdapter()
+    service, _, state = make_service(tmp_path, adapter)
+    state.parent.mkdir(parents=True)
+    state.write_text("expired", encoding="utf-8")
+
+    async def use_context() -> None:
+        async with service.context_for("example.com", "reader"):
+            pass
+
+    await asyncio.gather(use_context(), use_context())
+
+    assert adapter.authenticate_calls == 1
+    assert state.stat().st_mode & 0o777 == 0o600

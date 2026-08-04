@@ -41,7 +41,12 @@ class AuthProfileStore:
         return tuple(sorted(self._profiles))
 
 
-def resolve_storage_path(auth_root: Path, candidate: Path) -> Path:
+def resolve_storage_path(
+    auth_root: Path,
+    candidate: Path,
+    *,
+    profile_name: str | None = None,
+) -> Path:
     """Resolve a JSON storage-state path confined to the authentication root."""
     root = auth_root.resolve()
     if candidate.suffix.lower() != ".json":
@@ -58,4 +63,6 @@ def resolve_storage_path(auth_root: Path, candidate: Path) -> Path:
         resolved.relative_to(root)
     except ValueError as error:
         raise AuthenticationRequiredError(reason="storage_state_outside_auth_root") from error
+    if profile_name is not None and resolved.name != f"{profile_name}.json":
+        raise AuthenticationRequiredError(reason="storage_state_profile_name_mismatch")
     return resolved

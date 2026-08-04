@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+import structlog
 from bs4 import BeautifulSoup
 
 from crawling_mcp.domain.errors import CrawlError
@@ -47,6 +48,7 @@ class FailureArtifactWriter:
 
     def __init__(self, root: Path) -> None:
         self._root = root
+        self._log = structlog.get_logger(__name__)
 
     async def capture(
         self,
@@ -58,15 +60,23 @@ class FailureArtifactWriter:
     ) -> ArtifactPaths:
         """Best-effort capture of JSON, HTML, PNG and accessibility diagnostics."""
         folder = self._root / str(job_id)
-        await asyncio.to_thread(folder.mkdir, parents=True, exist_ok=True)
         error_path = folder / "error.json"
-        safe_error = mask_sensitive(error.to_response(job_id).model_dump(mode="json"))
-        await asyncio.to_thread(
-            _write_atomic_text,
-            error_path,
-            json.dumps(safe_error, ensure_ascii=False, indent=2),
-        )
         paths = ArtifactPaths(error_json=str(error_path))
+        safe_error = mask_sensitive(error.to_response(job_id).model_dump(mode="json"))
+        try:
+            await asyncio.to_thread(folder.mkdir, parents=True, exist_ok=True)
+            await asyncio.to_thread(
+                _write_atomic_text,
+                error_path,
+                json.dumps(safe_error, ensure_ascii=False, indent=2),
+            )
+        except Exception as artifact_error:
+            self._log.error(
+                "error_artifact_capture_failed",
+                job_id=str(job_id),
+                error_type=type(artifact_error).__name__,
+            )
+            return paths
         if page is None:
             return paths
         try:

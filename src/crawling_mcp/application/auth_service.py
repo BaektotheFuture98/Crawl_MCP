@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
+import structlog
 from playwright.async_api import BrowserContext
 
 from crawling_mcp.adapters.auth.registry import AuthRegistry
@@ -56,6 +57,8 @@ class AuthService:
         self._auth_root = auth_root
         self._secrets = secrets or EnvironmentSecretProvider()
         self._artifacts = artifacts
+        self._refresh_locks: dict[str, asyncio.Lock] = {}
+        self._log = structlog.get_logger(__name__)
 
     def _profile(self, domain: str, name: str) -> tuple[AuthProfile, AuthenticationAdapter, Path]:
         profile = self._profiles.get(name)
@@ -70,14 +73,49 @@ class AuthService:
                 domain=domain,
                 reason="profile_adapter_mismatch",
             )
-        storage_path = resolve_storage_path(self._auth_root, Path(profile.storage_state_path))
+        storage_path = resolve_storage_path(
+            self._auth_root,
+            Path(profile.storage_state_path),
+            profile_name=name,
+        )
         return profile, adapter, storage_path
 
     async def _save_state(self, context: BrowserContext, target: Path) -> None:
         await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
-        temporary = target.with_name(f".{target.stem}.tmp.json")
-        await context.storage_state(path=temporary, indexed_db=True)
-        await asyncio.to_thread(os.replace, temporary, target)
+        temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
+        try:
+            await context.storage_state(path=temporary, indexed_db=True)
+            await asyncio.to_thread(os.chmod, temporary, 0o600)
+            await asyncio.to_thread(os.replace, temporary, target)
+            await asyncio.to_thread(os.chmod, target, 0o600)
+        finally:
+            await asyncio.to_thread(temporary.unlink, missing_ok=True)
+
+    async def _capture_auth_failure(
+        self,
+        *,
+        job_id: UUID | None,
+        error: AuthenticationFailedError,
+        context: BrowserContext,
+        credentials: Credentials,
+    ) -> None:
+        if self._artifacts is None or job_id is None:
+            return
+        pages = context.pages
+        page = pages[-1] if pages else None
+        try:
+            await self._artifacts.capture(
+                job_id,
+                error,
+                page=page,
+                sensitive_values=(credentials.username, credentials.password),
+            )
+        except Exception as artifact_error:
+            self._log.error(
+                "auth_artifact_capture_failed",
+                job_id=str(job_id),
+                error_type=type(artifact_error).__name__,
+            )
 
     @asynccontextmanager
     async def context_for(
@@ -85,52 +123,67 @@ class AuthService:
     ) -> AsyncIterator[BrowserContext]:
         """Yield a public, saved-session, or freshly authenticated context."""
         if profile_name is None:
-            async with self._browser.context() as context:
-                yield context
+            async with self._browser.context() as public_context:
+                yield public_context
             return
         profile, adapter, storage_path = self._profile(domain, profile_name)
         if await asyncio.to_thread(storage_path.is_file):
-            async with self._browser.context(storage_path) as context:
-                if await adapter.is_authenticated(context):
-                    yield context
+            async with self._browser.context(storage_path) as saved_context:
+                if await adapter.is_authenticated(saved_context):
+                    yield saved_context
                     return
-        credentials = self._secrets.credentials(profile.username_env, profile.password_env)
-        async with self._browser.context() as context:
-            try:
-                await adapter.authenticate(context, credentials)
-            except AuthenticationFailedError as error:
-                if self._artifacts is not None and job_id is not None:
-                    pages = context.pages
-                    page = pages[-1] if pages else None
-                    await self._artifacts.capture(
-                        job_id,
-                        error,
-                        page=page,
-                        sensitive_values=(credentials.username, credentials.password),
+        refresh_stack = AsyncExitStack()
+        context: BrowserContext | None = None
+        lock = self._refresh_locks.setdefault(profile_name, asyncio.Lock())
+        try:
+            async with lock:
+                if await asyncio.to_thread(storage_path.is_file):
+                    saved = await refresh_stack.enter_async_context(
+                        self._browser.context(storage_path)
                     )
-                raise
-            if not await adapter.is_authenticated(context):
-                validation_error = AuthenticationFailedError(
-                    domain=domain, reason="post_login_check_failed"
-                )
-                if self._artifacts is not None and job_id is not None:
-                    pages = context.pages
-                    page = pages[-1] if pages else None
-                    await self._artifacts.capture(
-                        job_id,
-                        validation_error,
-                        page=page,
-                        sensitive_values=(credentials.username, credentials.password),
+                    if await adapter.is_authenticated(saved):
+                        context = saved
+                    else:
+                        await refresh_stack.aclose()
+                        refresh_stack = AsyncExitStack()
+                if context is None:
+                    credentials = self._secrets.credentials(
+                        profile.username_env, profile.password_env
                     )
-                raise validation_error
-            await self._save_state(context, storage_path)
+                    fresh_context = await refresh_stack.enter_async_context(self._browser.context())
+                    try:
+                        await adapter.authenticate(fresh_context, credentials)
+                    except AuthenticationFailedError as error:
+                        await self._capture_auth_failure(
+                            job_id=job_id,
+                            error=error,
+                            context=fresh_context,
+                            credentials=credentials,
+                        )
+                        raise
+                    if not await adapter.is_authenticated(fresh_context):
+                        validation_error = AuthenticationFailedError(
+                            domain=domain, reason="post_login_check_failed"
+                        )
+                        await self._capture_auth_failure(
+                            job_id=job_id,
+                            error=validation_error,
+                            context=fresh_context,
+                            credentials=credentials,
+                        )
+                        raise validation_error
+                    await self._save_state(fresh_context, storage_path)
+                    context = fresh_context
+            if context is None:
+                raise AuthenticationFailedError(domain=domain, reason="context_not_created")
             yield context
+        finally:
+            await refresh_stack.aclose()
 
     async def validate_session(self, profile_name: str) -> bool:
         """Check a stored state without performing login."""
         profile = self._profiles.get(profile_name)
-        adapter = self._registry.get(profile.domain, required=True)
-        storage_path = resolve_storage_path(self._auth_root, Path(profile.storage_state_path))
+        _, adapter, storage_path = self._profile(profile.domain, profile_name)
         if not await asyncio.to_thread(storage_path.is_file):
             return False
         async with self._browser.context(storage_path) as context:

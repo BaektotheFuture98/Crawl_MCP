@@ -48,3 +48,16 @@ async def test_failure_writer_captures_safe_debug_artifacts(tmp_path: Path) -> N
         content = (folder / name).read_text(encoding="utf-8")
         assert "reader-name" not in content
         assert "reader-secret" not in content
+
+
+@pytest.mark.asyncio
+async def test_failure_writer_never_replaces_original_error_on_filesystem_failure(
+    tmp_path: Path,
+) -> None:
+    unusable_root = tmp_path / "not-a-directory"
+    unusable_root.write_text("occupied", encoding="utf-8")
+    writer = FailureArtifactWriter(unusable_root)
+
+    paths = await writer.capture(uuid4(), AuthenticationFailedError(reason="original"))
+
+    assert paths.error_json.endswith("error.json")
