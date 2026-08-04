@@ -2,15 +2,21 @@ from __future__ import annotations
 
 import asyncio
 
-from crawling_mcp.domain.errors import ExtractionError, NavigationError
+from crawling_mcp.domain.errors import (
+    AuthenticationRequiredError,
+    ExtractionError,
+    NavigationError,
+)
 from crawling_mcp.domain.models import (
     CrawlContext,
     CrawlRequest,
     CrawlResult,
     PageItem,
+    PageSnapshot,
     ScrapePageRequest,
 )
-from crawling_mcp.ports.crawler import CrawlerEngineFactory, UrlValidator
+from crawling_mcp.ports.authentication import AuthContextProvider
+from crawling_mcp.ports.crawler import CrawlerEngine, CrawlerEngineFactory, UrlValidator
 from crawling_mcp.ports.extractor import ExtractorResolver
 from crawling_mcp.ports.repository import CrawlRepository
 
@@ -25,11 +31,43 @@ class CrawlService:
         factory: CrawlerEngineFactory,
         extractors: ExtractorResolver,
         repository: CrawlRepository,
+        auth: AuthContextProvider | None = None,
     ) -> None:
         self._validator = validator
         self._factory = factory
         self._extractors = extractors
         self._repository = repository
+        self._auth = auth
+
+    async def _scrape_with_context(
+        self,
+        request: ScrapePageRequest,
+        context: CrawlContext,
+        engine: CrawlerEngine,
+    ) -> PageSnapshot:
+        if request.auth_profile is None:
+            return await engine.scrape(request, context)
+        if self._auth is None:
+            raise AuthenticationRequiredError(reason="auth_service_not_configured")
+        async with self._auth.context_for(context.domain, request.auth_profile) as browser_context:
+            context.authenticated = True
+            context.browser_context = browser_context
+            return await engine.scrape(request, context)
+
+    async def _crawl_with_context(
+        self,
+        request: CrawlRequest,
+        context: CrawlContext,
+        engine: CrawlerEngine,
+    ) -> CrawlResult:
+        if request.auth_profile is None:
+            return await engine.crawl(request, context)
+        if self._auth is None:
+            raise AuthenticationRequiredError(reason="auth_service_not_configured")
+        async with self._auth.context_for(context.domain, request.auth_profile) as browser_context:
+            context.authenticated = True
+            context.browser_context = browser_context
+            return await engine.crawl(request, context)
 
     async def scrape_page(self, request: ScrapePageRequest) -> PageItem:
         """Validate, fetch and extract one page."""
@@ -41,7 +79,8 @@ class CrawlService:
         safe_request = request.model_copy(update={"url": validated.url})
         try:
             snapshot = await asyncio.wait_for(
-                engine.scrape(safe_request, context), timeout=request.request_timeout_seconds
+                self._scrape_with_context(safe_request, context, engine),
+                timeout=request.request_timeout_seconds,
             )
         except TimeoutError as error:
             raise NavigationError(url=validated.url, reason="request_timeout") from error
@@ -63,7 +102,8 @@ class CrawlService:
         safe_request = request.model_copy(update={"start_url": validated.url})
         try:
             result = await asyncio.wait_for(
-                engine.crawl(safe_request, context), timeout=request.job_timeout_seconds
+                self._crawl_with_context(safe_request, context, engine),
+                timeout=request.job_timeout_seconds,
             )
         except TimeoutError as error:
             raise NavigationError(url=validated.url, reason="job_timeout") from error
