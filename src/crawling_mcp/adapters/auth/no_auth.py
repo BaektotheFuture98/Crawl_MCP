@@ -16,6 +16,11 @@ class NoAuthAdapter:
         """Return public adapter metadata name."""
         return self._name
 
+    @property
+    def profile_name(self) -> str:
+        """Return the profile configuration adapter key."""
+        return "no_auth"
+
     async def is_authenticated(self, context: Any) -> bool:
         """Public pages are always considered authenticated."""
         return True

@@ -116,14 +116,15 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
         headless=configured.browser_headless,
         max_contexts=configured.browser_max_contexts,
     )
+    artifacts = FailureArtifactWriter(configured.data_dir / "failures")
     auth_service = AuthService(
         profiles=profiles,
         registry=auth_registry,
         browser=browser,
         auth_root=configured.data_dir / "auth",
+        artifacts=artifacts,
     )
     router = PageRouter()
-    artifacts = FailureArtifactWriter(configured.data_dir / "failures")
     http_engine = HttpCrawlerEngine(validator=validator, extractors=extractors, router=router)
     browser_engine = BrowserCrawlerEngine(
         validator=validator,

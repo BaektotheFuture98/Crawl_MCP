@@ -36,6 +36,7 @@ class ExampleLoginAdapter:
     """Form-login adapter for the local development test site."""
 
     name = "form_login"
+    profile_name = "example_login"
 
     def __init__(self, base_url: str, *, login_variant: str | None = None) -> None:
         self._base_url = base_url.rstrip("/")
@@ -54,6 +55,7 @@ class ExampleLoginAdapter:
     async def authenticate(self, context: BrowserContext, credentials: Credentials) -> None:
         """Log in using resilient candidate locators and verify success."""
         page = await context.new_page()
+        completed = False
         try:
             login_url = f"{self._base_url}/test-site/login"
             if self._login_variant is not None:
@@ -94,5 +96,7 @@ class ExampleLoginAdapter:
                 raise AuthenticationFailedError(reason="login_rejected")
             if await page.get_by_role("button", name="로그아웃").count() != 1:
                 raise AuthenticationFailedError(reason="success_marker_missing")
+            completed = True
         finally:
-            await page.close()
+            if completed:
+                await page.close()

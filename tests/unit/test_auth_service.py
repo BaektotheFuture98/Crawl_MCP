@@ -11,7 +11,7 @@ import pytest
 from crawling_mcp.adapters.auth.registry import AuthRegistry
 from crawling_mcp.adapters.auth.saved_session import AuthProfileStore
 from crawling_mcp.application.auth_service import AuthService
-from crawling_mcp.domain.errors import AuthenticationFailedError
+from crawling_mcp.domain.errors import AuthenticationFailedError, AuthenticationRequiredError
 from crawling_mcp.domain.models import AuthProfile, Credentials
 
 
@@ -41,6 +41,7 @@ class FakeBrowser:
 
 class FakeAdapter:
     name = "form_login"
+    profile_name = "example_login"
 
     def __init__(self, checks: list[bool]) -> None:
         self.checks = checks
@@ -60,14 +61,25 @@ class FakeSecrets:
         return Credentials(username="user", password="secret")
 
 
-def make_service(tmp_path: Path, adapter: FakeAdapter) -> tuple[AuthService, FakeBrowser, Path]:
+class FailingSecrets:
+    def credentials(self, username_env: str, password_env: str) -> Credentials:
+        raise AssertionError("valid saved sessions must not resolve login credentials")
+
+
+def make_service(
+    tmp_path: Path,
+    adapter: FakeAdapter,
+    *,
+    secrets: Any | None = None,
+    profile_adapter: str = "example_login",
+) -> tuple[AuthService, FakeBrowser, Path]:
     auth_root = tmp_path / "data" / "auth"
     state = auth_root / "reader.json"
     profiles = AuthProfileStore(
         {
             "reader": AuthProfile(
                 domain="example.com",
-                adapter="example_login",
+                adapter=profile_adapter,
                 username_env="USER_ENV",
                 password_env="PASSWORD_ENV",
                 storage_state_path=str(state),
@@ -83,7 +95,7 @@ def make_service(tmp_path: Path, adapter: FakeAdapter) -> tuple[AuthService, Fak
             registry=registry,
             browser=browser,
             auth_root=auth_root,
-            secrets=FakeSecrets(),
+            secrets=secrets or FakeSecrets(),
         ),
         browser,
         state,
@@ -102,6 +114,33 @@ async def test_auth_service_reuses_valid_saved_state(tmp_path: Path) -> None:
 
     assert browser.loaded_states == [state]
     assert adapter.authenticate_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_auth_service_reuses_valid_state_without_resolving_secrets(tmp_path: Path) -> None:
+    adapter = FakeAdapter([True])
+    service, _, state = make_service(tmp_path, adapter, secrets=FailingSecrets())
+    state.parent.mkdir(parents=True)
+    state.write_text("{}", encoding="utf-8")
+
+    async with service.context_for("example.com", "reader") as context:
+        assert context.loaded_state == state
+
+    assert adapter.authenticate_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_auth_service_rejects_profile_adapter_mismatch(tmp_path: Path) -> None:
+    adapter = FakeAdapter([True])
+    service, _, _ = make_service(
+        tmp_path,
+        adapter,
+        profile_adapter="unexpected_adapter",
+    )
+
+    with pytest.raises(AuthenticationRequiredError, match="인증"):
+        async with service.context_for("example.com", "reader"):
+            pass
 
 
 @pytest.mark.asyncio

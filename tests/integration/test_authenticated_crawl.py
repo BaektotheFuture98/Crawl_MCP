@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -22,6 +23,7 @@ from crawling_mcp.domain.models import (
     Credentials,
     ScrapePageRequest,
 )
+from crawling_mcp.infrastructure.artifacts import FailureArtifactWriter
 from crawling_mcp.infrastructure.browser import BrowserManager
 from crawling_mcp.infrastructure.security import UrlSecurityValidator
 
@@ -60,6 +62,7 @@ def make_auth_stack(
         browser=browser,
         auth_root=state_path.parent,
         secrets=secrets or FixedSecrets(),
+        artifacts=FailureArtifactWriter(tmp_path / "failures"),
     )
     engine = BrowserCrawlerEngine(
         validator=UrlSecurityValidator(allow_private_networks=True),
@@ -175,10 +178,47 @@ async def test_missing_login_ui_returns_authentication_failure(
 ) -> None:
     browser, auth, _, _ = make_auth_stack(test_site_url, tmp_path, login_variant="missing")
     await browser.start()
+    job_id = uuid4()
     try:
         with pytest.raises(AuthenticationFailedError) as error:
-            async with auth.context_for("127.0.0.1", "reader"):
+            async with auth.context_for("127.0.0.1", "reader", job_id):
                 pass
         assert error.value.details["reason"] == "locator_not_found"
+        folder = tmp_path / "failures" / str(job_id)
+        assert (folder / "error.json").is_file()
+        assert (folder / "page.html").is_file()
+        assert (folder / "screenshot.png").stat().st_size > 0
+        assert (folder / "accessibility_snapshot.txt").is_file()
+    finally:
+        await browser.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_max_depth_zero_does_not_visit_detail_links(
+    test_site_url: str, tmp_path: Path
+) -> None:
+    browser, auth, engine, _ = make_auth_stack(test_site_url, tmp_path)
+    await browser.start()
+    try:
+        async with auth.context_for("127.0.0.1", "reader") as browser_context:
+            result = await engine.crawl(
+                CrawlRequest(
+                    start_url=f"{test_site_url}/test-site/list",
+                    crawl_mode="browser",
+                    auth_profile="reader",
+                    max_pages=3,
+                    max_depth=0,
+                    request_delay_seconds=0,
+                    respect_robots_txt=False,
+                ),
+                CrawlContext(
+                    domain="127.0.0.1",
+                    authenticated=True,
+                    browser_context=browser_context,
+                ),
+            )
+        assert len(result.items) == 1
+        assert result.items[0].title == "목록"
     finally:
         await browser.close()

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from bs4 import BeautifulSoup
 
@@ -13,7 +14,14 @@ from crawling_mcp.domain.models import ArtifactPaths
 from crawling_mcp.infrastructure.logging import mask_sensitive
 
 
-def _sanitize_html(html: str) -> str:
+def _redact_values(text: str, sensitive_values: tuple[str, ...]) -> str:
+    for value in sensitive_values:
+        if value:
+            text = text.replace(value, "***REDACTED***")
+    return text
+
+
+def _sanitize_html(html: str, sensitive_values: tuple[str, ...]) -> str:
     soup = BeautifulSoup(html, "lxml")
     for element in soup.select("input"):
         name = str(element.get("name", "")).lower()
@@ -22,7 +30,16 @@ def _sanitize_html(html: str) -> str:
             word in name for word in ("password", "secret", "token", "authorization")
         ):
             element["value"] = "***REDACTED***"
-    return str(soup)
+    return _redact_values(str(soup), sensitive_values)
+
+
+def _write_atomic_text(path: Path, text: str) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(text, encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 class FailureArtifactWriter:
@@ -32,7 +49,12 @@ class FailureArtifactWriter:
         self._root = root
 
     async def capture(
-        self, job_id: UUID, error: CrawlError, *, page: Any | None = None
+        self,
+        job_id: UUID,
+        error: CrawlError,
+        *,
+        page: Any | None = None,
+        sensitive_values: tuple[str, ...] = (),
     ) -> ArtifactPaths:
         """Best-effort capture of JSON, HTML, PNG and accessibility diagnostics."""
         folder = self._root / str(job_id)
@@ -40,16 +62,16 @@ class FailureArtifactWriter:
         error_path = folder / "error.json"
         safe_error = mask_sensitive(error.to_response(job_id).model_dump(mode="json"))
         await asyncio.to_thread(
-            error_path.write_text,
+            _write_atomic_text,
+            error_path,
             json.dumps(safe_error, ensure_ascii=False, indent=2),
-            encoding="utf-8",
         )
         paths = ArtifactPaths(error_json=str(error_path))
         if page is None:
             return paths
         try:
             html_path = folder / "page.html"
-            html = _sanitize_html(await page.content())
+            html = _sanitize_html(await page.content(), sensitive_values)
             await asyncio.to_thread(html_path.write_text, html, encoding="utf-8")
             paths.html = str(html_path)
         except Exception:
@@ -62,7 +84,7 @@ class FailureArtifactWriter:
             pass
         try:
             accessibility_path = folder / "accessibility_snapshot.txt"
-            snapshot = await page.locator("body").aria_snapshot()
+            snapshot = _redact_values(await page.locator("body").aria_snapshot(), sensitive_values)
             await asyncio.to_thread(accessibility_path.write_text, snapshot, encoding="utf-8")
             paths.accessibility_snapshot = str(accessibility_path)
         except Exception:
