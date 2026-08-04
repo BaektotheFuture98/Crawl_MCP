@@ -107,7 +107,21 @@ class BrowserCrawlerEngine:
             url, depth = await queue.get()
             page = await browser_context.new_page()
             try:
-                snapshot = await self._navigate(page, url, request.request_timeout_seconds)
+                snapshot: PageSnapshot | None = None
+                last_error: Exception | None = None
+                for attempt in range(request.max_request_retries + 1):
+                    try:
+                        snapshot = await self._navigate(page, url, request.request_timeout_seconds)
+                        break
+                    except Exception as error:
+                        last_error = error
+                        if attempt >= request.max_request_retries:
+                            raise
+                if snapshot is None:
+                    raise NavigationError(
+                        url=url,
+                        reason=(type(last_error).__name__ if last_error else "no_response"),
+                    )
                 snapshot.depth = depth
                 snapshot.page_type = self._router.classify(snapshot)
                 result.items.extend(await extractor.extract(snapshot))

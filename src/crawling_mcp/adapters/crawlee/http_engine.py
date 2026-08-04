@@ -7,6 +7,7 @@ from urllib.parse import urljoin
 from crawlee import ConcurrencySettings, Request
 from crawlee._types import BasicCrawlingContext
 from crawlee.crawlers import BeautifulSoupCrawler, BeautifulSoupCrawlingContext
+from crawlee.storages import RequestQueue
 
 from crawling_mcp.adapters.crawlee.router import PageRouter
 from crawling_mcp.domain.enums import ErrorCode, PageType
@@ -55,10 +56,12 @@ class HttpCrawlerEngine:
     async def scrape(self, request: ScrapePageRequest, context: CrawlContext) -> PageSnapshot:
         """Fetch one static page with Crawlee."""
         snapshots: list[PageSnapshot] = []
+        request_queue = await RequestQueue.open(name=f"scrape-{context.job_id}")
         crawler = BeautifulSoupCrawler(
             max_requests_per_crawl=1,
             max_request_retries=0,
             request_handler_timeout=timedelta(seconds=request.request_timeout_seconds),
+            request_manager=request_queue,
         )
 
         @crawler.router.default_handler
@@ -67,7 +70,10 @@ class HttpCrawlerEngine:
             await self._validator.validate(snapshot.url)
             snapshots.append(snapshot)
 
-        await crawler.run([request.url])
+        try:
+            await crawler.run([request.url])
+        finally:
+            await request_queue.drop()
         if not snapshots:
             raise NavigationError(url=request.url, reason="no_response")
         return snapshots[0]
@@ -87,14 +93,21 @@ class HttpCrawlerEngine:
             normalize_url(request.start_url, remove_tracking=request.remove_tracking_parameters)
         }
         reservation_lock = asyncio.Lock()
+        request_queue = await RequestQueue.open(name=f"crawl-{context.job_id}")
         crawler = BeautifulSoupCrawler(
             max_requests_per_crawl=request.max_pages,
             max_request_retries=request.max_request_retries,
             request_handler_timeout=timedelta(seconds=request.request_timeout_seconds),
             respect_robots_txt_file=request.respect_robots_txt,
+            request_manager=request_queue,
             concurrency_settings=ConcurrencySettings(
                 max_concurrency=request.max_concurrency,
                 desired_concurrency=request.max_concurrency,
+                max_tasks_per_minute=(
+                    60 / request.request_delay_seconds
+                    if request.request_delay_seconds
+                    else float("inf")
+                ),
             ),
         )
 
@@ -156,5 +169,8 @@ class HttpCrawlerEngine:
             label=PageType.START.value,
             user_data={"depth": 0},
         )
-        await crawler.run([start])
+        try:
+            await crawler.run([start])
+        finally:
+            await request_queue.drop()
         return result

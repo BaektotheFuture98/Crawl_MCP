@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from crawling_mcp.adapters.crawlee.http_engine import HttpCrawlerEngine
@@ -22,14 +24,16 @@ def make_engine() -> HttpCrawlerEngine:
 @pytest.mark.asyncio
 async def test_public_login_page_can_be_scraped(test_site_url: str) -> None:
     engine = make_engine()
+    context = CrawlContext(domain="127.0.0.1")
 
     snapshot = await engine.scrape(
         ScrapePageRequest(url=f"{test_site_url}/test-site/login", crawl_mode="http"),
-        CrawlContext(domain="127.0.0.1"),
+        context,
     )
 
     assert snapshot.status_code == 200
     assert "개발용 로그인" in snapshot.html
+    assert not (Path("storage/request_queues") / f"scrape-{context.job_id}").exists()
 
 
 @pytest.mark.integration

@@ -48,6 +48,7 @@ async def test_browser_failure_saves_html_screenshot_and_accessibility_snapshot(
                 start_url=f"{test_site_url}/test-site/login",
                 crawl_mode="browser",
                 max_pages=1,
+                max_request_retries=0,
                 request_delay_seconds=0,
                 respect_robots_txt=False,
             ),
