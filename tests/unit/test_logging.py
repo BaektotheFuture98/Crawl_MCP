@@ -34,3 +34,16 @@ def test_mask_sensitive_removes_url_user_info() -> None:
     assert masked["url"] == "https://%2A%2A%2AREDACTED%2A%2A%2A@example.com/path"
     assert "reader" not in masked["url"]
     assert "secret" not in masked["url"]
+
+
+def test_mask_sensitive_redacts_sensitive_query_from_named_url_fields() -> None:
+    masked = mask_sensitive(
+        {
+            "final_url": "https://example.com/callback?access_token=secret&visible=yes",
+            "canonical_uri": "https://example.com/page?api_key=api-secret-value",
+        }
+    )
+
+    assert "secret" not in masked["final_url"]
+    assert "api-secret-value" not in masked["canonical_uri"]
+    assert "visible=yes" in masked["final_url"]

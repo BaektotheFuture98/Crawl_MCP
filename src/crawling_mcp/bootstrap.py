@@ -116,8 +116,13 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
         domain_allowlist=configured.domain_allowlist,
         allow_private_networks=configured.allow_private_networks,
         resolver_timeout_seconds=configured.dns_timeout_seconds,
+        max_dns_answers=configured.max_dns_answers,
     )
-    egress_proxy = SafeEgressProxy(validator=validator)
+    egress_proxy = SafeEgressProxy(
+        validator=validator,
+        connect_timeout_seconds=configured.egress_connect_timeout_seconds,
+        max_upstream_bytes=configured.max_egress_bytes_per_connection,
+    )
     extractors = ExtractorRegistry(default=GenericExtractor())
     navigation = NavigationRegistry()
     auth_registry = AuthRegistry(default=NoAuthAdapter())
@@ -155,6 +160,9 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
         extractors=extractors,
         router=router,
         egress_proxy=egress_proxy,
+        max_content_bytes=configured.max_content_bytes,
+        max_links_per_page=configured.max_links_per_page,
+        robots=robots,
     )
     browser_engine = BrowserCrawlerEngine(
         validator=validator,
@@ -163,8 +171,14 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
         router=router,
         artifacts=artifacts,
         robots=robots,
+        max_content_bytes=configured.max_content_bytes,
+        max_links_per_page=configured.max_links_per_page,
     )
-    adaptive_engine = AdaptiveCrawlerEngine(http=http_engine, browser=browser_engine)
+    adaptive_engine = AdaptiveCrawlerEngine(
+        http=http_engine,
+        browser=browser_engine,
+        robots=robots,
+    )
     factory = CrawlerFactory(http=http_engine, browser=browser_engine, adaptive=adaptive_engine)
     crawl_service = CrawlService(
         validator=validator,

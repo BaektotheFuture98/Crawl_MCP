@@ -38,11 +38,15 @@ class UrlSecurityValidator:
         domain_allowlist: Sequence[str] = (),
         allow_private_networks: bool = False,
         resolver_timeout_seconds: float = 10.0,
+        max_dns_answers: int = 16,
     ) -> None:
+        if max_dns_answers < 1:
+            raise ValueError("max_dns_answers must be positive")
         self._resolver = resolver or AsyncDnsResolver()
         self._allowlist = tuple(domain.lower().rstrip(".") for domain in domain_allowlist)
         self._allow_private = allow_private_networks
         self._resolver_timeout = resolver_timeout_seconds
+        self._max_dns_answers = max_dns_answers
 
     async def validate(self, url: str) -> ValidatedUrl:
         """Return normalized URL data only when all security checks pass."""
@@ -74,6 +78,13 @@ class UrlSecurityValidator:
             raise InvalidUrlError(domain=hostname, reason="dns_resolution_failed") from error
         if not addresses:
             raise InvalidUrlError(domain=hostname, reason="dns_no_answers")
+        if len(addresses) > self._max_dns_answers:
+            raise InvalidUrlError(
+                domain=hostname,
+                reason="dns_too_many_answers",
+                answer_count=len(addresses),
+                max_answers=self._max_dns_answers,
+            )
         if not self._allow_private:
             for address in addresses:
                 try:

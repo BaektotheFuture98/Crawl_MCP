@@ -66,7 +66,10 @@ def mask_sensitive(value: Any, *, parent_key: str = "") -> Any:
         return {key: mask_sensitive(item, parent_key=str(key)) for key, item in value.items()}
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [mask_sensitive(item) for item in value]
-    if isinstance(value, str) and parent_key.lower() in {"url", "uri"}:
+    normalized_parent = _normalized_key(parent_key)
+    if isinstance(value, str) and (
+        normalized_parent in {"url", "uri"} or normalized_parent.endswith(("_url", "_uri"))
+    ):
         return _mask_url(value)
     return value
 

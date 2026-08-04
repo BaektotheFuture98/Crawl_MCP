@@ -70,6 +70,15 @@ def create_test_site(*, username: str = "test-user", password: str = "test-passw
             </form>"""
         return _page("개발용 로그인", f"<h1>개발용 로그인</h1>{form}")
 
+    @app.get("/test-site/many-links", response_class=HTMLResponse)
+    async def many_links() -> str:
+        return _page(
+            "많은 링크",
+            """<a href="/test-site/login?item=1">1</a>
+            <a href="/test-site/login?item=2">2</a>
+            <a href="/test-site/login?item=3">3</a>""",
+        )
+
     @app.post("/test-site/login", response_class=HTMLResponse)
     async def login(username: str = Form(), password: str = Form()) -> Response:
         if not secrets.compare_digest(username, state.username) or not secrets.compare_digest(

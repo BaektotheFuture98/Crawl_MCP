@@ -9,16 +9,30 @@ from crawling_mcp.domain.models import ValidatedUrl
 from crawling_mcp.ports.crawler import UrlValidator
 
 _HEADER_LIMIT = 65_536
-_CONNECT_TIMEOUT_SECONDS = 15
+_CONNECT_TIMEOUT_SECONDS = 15.0
+_MAX_UPSTREAM_BYTES = 25_000_000
 
 
 class SafeEgressProxy:
     """Pin outbound HTTP(S) connections to addresses approved by the URL policy."""
 
-    def __init__(self, *, validator: UrlValidator) -> None:
+    def __init__(
+        self,
+        *,
+        validator: UrlValidator,
+        connect_timeout_seconds: float = _CONNECT_TIMEOUT_SECONDS,
+        max_upstream_bytes: int = _MAX_UPSTREAM_BYTES,
+    ) -> None:
+        if connect_timeout_seconds <= 0:
+            raise ValueError("connect_timeout_seconds must be positive")
+        if max_upstream_bytes < 1:
+            raise ValueError("max_upstream_bytes must be positive")
         self._validator = validator
+        self._connect_timeout = connect_timeout_seconds
+        self._max_upstream_bytes = max_upstream_bytes
         self._server: asyncio.Server | None = None
         self._url: str | None = None
+        self._handlers: set[asyncio.Task[None]] = set()
 
     @property
     def url(self) -> str:
@@ -31,7 +45,7 @@ class SafeEgressProxy:
         """Start one loopback-only proxy server."""
         if self._server is not None:
             return
-        server = await asyncio.start_server(self._handle_client, "127.0.0.1", 0)
+        server = await asyncio.start_server(self._track_client, "127.0.0.1", 0)
         socket = server.sockets[0]
         port = int(socket.getsockname()[1])
         self._server = server
@@ -41,23 +55,44 @@ class SafeEgressProxy:
         """Stop accepting connections and close the listening socket."""
         if self._server is None:
             return
-        self._server.close()
-        await self._server.wait_closed()
-        self._server = None
+        server = self._server
+        server.close()
         self._url = None
+        current = asyncio.current_task()
+        active = [task for task in self._handlers if task is not current]
+        for task in active:
+            task.cancel()
+        if active:
+            await asyncio.gather(*active, return_exceptions=True)
+        await server.wait_closed()
+        self._server = None
+
+    async def _track_client(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        task = asyncio.current_task()
+        if task is None:
+            await self._handle_client(reader, writer)
+            return
+        self._handlers.add(task)
+        try:
+            await self._handle_client(reader, writer)
+        finally:
+            self._handlers.discard(task)
 
     async def _connect(
         self, target: ValidatedUrl
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         last_error: OSError | None = None
-        for address in target.addresses:
-            try:
-                return await asyncio.wait_for(
-                    asyncio.open_connection(address, target.port),
-                    timeout=_CONNECT_TIMEOUT_SECONDS,
-                )
-            except OSError as error:
-                last_error = error
+        async with asyncio.timeout(self._connect_timeout):
+            for address in target.addresses:
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.open_connection(address, target.port),
+                        timeout=min(3.0, self._connect_timeout),
+                    )
+                except OSError as error:
+                    last_error = error
         raise OSError("no validated address accepted the connection") from last_error
 
     @staticmethod
@@ -106,21 +141,40 @@ class SafeEgressProxy:
         forwarded.append("Connection: close")
         return target, "\r\n".join(forwarded) + "\r\n\r\n"
 
-    @staticmethod
     async def _tunnel(
+        self,
         client_reader: asyncio.StreamReader,
         client_writer: asyncio.StreamWriter,
         upstream_reader: asyncio.StreamReader,
         upstream_writer: asyncio.StreamWriter,
     ) -> None:
-        async def pump(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        async def pump(
+            reader: asyncio.StreamReader,
+            writer: asyncio.StreamWriter,
+            *,
+            max_bytes: int | None = None,
+        ) -> None:
+            transferred = 0
             while data := await reader.read(65_536):
+                if max_bytes is not None and transferred + len(data) > max_bytes:
+                    remaining = max_bytes - transferred
+                    if remaining > 0:
+                        writer.write(data[:remaining])
+                        await writer.drain()
+                    return
                 writer.write(data)
                 await writer.drain()
+                transferred += len(data)
 
         tasks = {
             asyncio.create_task(pump(client_reader, upstream_writer)),
-            asyncio.create_task(pump(upstream_reader, client_writer)),
+            asyncio.create_task(
+                pump(
+                    upstream_reader,
+                    client_writer,
+                    max_bytes=self._max_upstream_bytes,
+                )
+            ),
         }
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:

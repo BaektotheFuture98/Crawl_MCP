@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
-from typing import cast
+from typing import Any, cast
 from urllib.parse import urljoin
 
+from bs4 import BeautifulSoup
 from crawlee import ConcurrencySettings, Request
 from crawlee._types import BasicCrawlingContext
 from crawlee.crawlers import BeautifulSoupCrawler, BeautifulSoupCrawlingContext
+from crawlee.crawlers._beautifulsoup._beautifulsoup_parser import BeautifulSoupParser
+from crawlee.http_clients import HttpResponse
 from crawlee.proxy_configuration import ProxyConfiguration
 from crawlee.storages import RequestQueue
 
@@ -26,6 +29,23 @@ from crawling_mcp.domain.policies import LinkPolicy, normalize_url
 from crawling_mcp.ports.crawler import UrlValidator
 from crawling_mcp.ports.extractor import ExtractorResolver
 from crawling_mcp.ports.network import EgressProxyPort
+from crawling_mcp.ports.robots import RobotsPolicy
+
+
+class _BoundedBeautifulSoupParser(BeautifulSoupParser):
+    def __init__(self, max_content_bytes: int) -> None:
+        super().__init__(parser="lxml")
+        self._max_content_bytes = max_content_bytes
+
+    async def parse(self, response: HttpResponse) -> BeautifulSoup:
+        body = await response.read()
+        if len(body) > self._max_content_bytes:
+            raise NavigationError(
+                reason="response_too_large",
+                actual_bytes=len(body),
+                max_bytes=self._max_content_bytes,
+            )
+        return await asyncio.to_thread(BeautifulSoup, body, features="lxml")
 
 
 class HttpCrawlerEngine:
@@ -38,26 +58,50 @@ class HttpCrawlerEngine:
         extractors: ExtractorResolver,
         router: PageRouter | None = None,
         egress_proxy: EgressProxyPort | None = None,
+        max_content_bytes: int = 10_000_000,
+        max_links_per_page: int = 1000,
+        robots: RobotsPolicy | None = None,
     ) -> None:
+        if max_content_bytes < 1:
+            raise ValueError("max_content_bytes must be positive")
+        if max_links_per_page < 1:
+            raise ValueError("max_links_per_page must be positive")
         self._validator = validator
         self._extractors = extractors
         self._router = router or PageRouter()
         self._egress_proxy = egress_proxy
+        self._max_content_bytes = max_content_bytes
+        self._max_links_per_page = max_links_per_page
+        self._robots = robots
 
     def _proxy_configuration(self) -> ProxyConfiguration | None:
         if self._egress_proxy is None:
             return None
         return ProxyConfiguration(proxy_urls=[self._egress_proxy.url])
 
-    @staticmethod
-    def _snapshot(context: BeautifulSoupCrawlingContext, *, depth: int) -> PageSnapshot:
+    def _crawler(self, **kwargs: Any) -> BeautifulSoupCrawler:
+        crawler = BeautifulSoupCrawler(**kwargs)
+        crawler._parser = _BoundedBeautifulSoupParser(self._max_content_bytes)
+        return crawler
+
+    def _snapshot(self, context: BeautifulSoupCrawlingContext, *, depth: int) -> PageSnapshot:
         final_url = context.request.loaded_url or context.request.url
         links = [
-            urljoin(final_url, str(anchor.get("href"))) for anchor in context.soup.select("a[href]")
+            urljoin(final_url, str(anchor.get("href")))
+            for anchor in context.soup.select("a[href]", limit=self._max_links_per_page)
         ]
+        html = str(context.soup)
+        encoded_size = len(html.encode("utf-8"))
+        if encoded_size > self._max_content_bytes:
+            raise NavigationError(
+                url=final_url,
+                reason="response_too_large",
+                actual_bytes=encoded_size,
+                max_bytes=self._max_content_bytes,
+            )
         return PageSnapshot(
             url=final_url,
-            html=str(context.soup),
+            html=html,
             status_code=context.http_response.status_code,
             links=links,
             depth=depth,
@@ -67,7 +111,7 @@ class HttpCrawlerEngine:
         """Fetch one static page with Crawlee."""
         snapshots: list[PageSnapshot] = []
         request_queue = await RequestQueue.open(name=f"scrape-{context.job_id}")
-        crawler = BeautifulSoupCrawler(
+        crawler = self._crawler(
             max_requests_per_crawl=1,
             max_request_retries=0,
             request_handler_timeout=timedelta(seconds=request.request_timeout_seconds),
@@ -91,6 +135,14 @@ class HttpCrawlerEngine:
 
     async def crawl(self, request: CrawlRequest, context: CrawlContext) -> CrawlResult:
         """Traverse links with Crawlee's RequestQueue and Router labels."""
+        if request.respect_robots_txt:
+            if self._robots is None:
+                raise NavigationError(
+                    url=request.start_url,
+                    reason="robots_policy_not_configured",
+                )
+            if not await self._robots.allowed(request.start_url):
+                raise NavigationError(url=request.start_url, reason="robots_disallowed")
         result = CrawlResult(job_id=context.job_id, start_url=request.start_url)
         policy = LinkPolicy(
             start_url=request.start_url,
@@ -105,11 +157,11 @@ class HttpCrawlerEngine:
         }
         reservation_lock = asyncio.Lock()
         request_queue = await RequestQueue.open(name=f"crawl-{context.job_id}")
-        crawler = BeautifulSoupCrawler(
+        crawler = self._crawler(
             max_requests_per_crawl=request.max_pages,
             max_request_retries=request.max_request_retries,
             request_handler_timeout=timedelta(seconds=request.request_timeout_seconds),
-            respect_robots_txt_file=request.respect_robots_txt,
+            respect_robots_txt_file=False,
             request_manager=request_queue,
             proxy_configuration=cast(ProxyConfiguration, self._proxy_configuration()),
             concurrency_settings=ConcurrencySettings(
@@ -143,6 +195,12 @@ class HttpCrawlerEngine:
                     if not policy.allows(normalized, depth=depth + 1):
                         continue
                     await self._validator.validate(normalized)
+                    if (
+                        request.respect_robots_txt
+                        and self._robots is not None
+                        and not await self._robots.allowed(normalized)
+                    ):
+                        continue
                 except CrawlError:
                     continue
                 async with reservation_lock:

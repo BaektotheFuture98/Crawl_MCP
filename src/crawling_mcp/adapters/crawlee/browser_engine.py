@@ -37,13 +37,21 @@ class BrowserCrawlerEngine:
         router: PageRouter | None = None,
         artifacts: FailureArtifactPort | None = None,
         robots: RobotsPolicy | None = None,
+        max_content_bytes: int = 10_000_000,
+        max_links_per_page: int = 1000,
     ) -> None:
+        if max_content_bytes < 1:
+            raise ValueError("max_content_bytes must be positive")
+        if max_links_per_page < 1:
+            raise ValueError("max_links_per_page must be positive")
         self._validator = validator
         self._extractors = extractors
         self._browser = browser
         self._router = router or PageRouter()
         self._artifacts = artifacts
         self._robots = robots
+        self._max_content_bytes = max_content_bytes
+        self._max_links_per_page = max_links_per_page
         self._log = structlog.get_logger(__name__)
 
     async def _capture_artifacts(
@@ -74,9 +82,32 @@ class BrowserCrawlerEngine:
                 reason="transient_http_status",
                 status_code=response.status,
             )
+        if response is not None:
+            content_length = response.headers.get("content-length")
+            if content_length is not None:
+                try:
+                    declared_size = int(content_length)
+                except ValueError:
+                    declared_size = 0
+                if declared_size > self._max_content_bytes:
+                    raise NavigationError(
+                        url=page.url,
+                        reason="response_too_large",
+                        actual_bytes=declared_size,
+                        max_bytes=self._max_content_bytes,
+                    )
         html = await page.content()
+        encoded_size = len(html.encode("utf-8"))
+        if encoded_size > self._max_content_bytes:
+            raise NavigationError(
+                url=page.url,
+                reason="response_too_large",
+                actual_bytes=encoded_size,
+                max_bytes=self._max_content_bytes,
+            )
         links = await page.locator("a[href]").evaluate_all(
-            "els => els.map(el => el.href).filter(Boolean)"
+            "(els, limit) => els.slice(0, limit).map(el => el.href).filter(Boolean)",
+            self._max_links_per_page,
         )
         return PageSnapshot(
             url=page.url,

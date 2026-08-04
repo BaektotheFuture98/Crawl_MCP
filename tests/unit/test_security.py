@@ -91,3 +91,17 @@ async def test_security_bounds_dns_resolution_time() -> None:
         await validator.validate("https://example.com")
 
     assert caught.value.details["reason"] == "dns_resolution_timeout"
+
+
+@pytest.mark.asyncio
+async def test_security_rejects_excessive_dns_answers() -> None:
+    addresses = [f"93.184.216.{index}" for index in range(1, 18)]
+    validator = UrlSecurityValidator(
+        resolver=StaticResolver(addresses),
+        max_dns_answers=16,
+    )
+
+    with pytest.raises(InvalidUrlError) as caught:
+        await validator.validate("https://example.com")
+
+    assert caught.value.details["reason"] == "dns_too_many_answers"

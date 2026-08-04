@@ -3,7 +3,7 @@ from __future__ import annotations
 from bs4 import BeautifulSoup
 
 from crawling_mcp.domain.enums import CrawlMode
-from crawling_mcp.domain.errors import CrawlError
+from crawling_mcp.domain.errors import CrawlError, NavigationError
 from crawling_mcp.domain.models import (
     CrawlContext,
     CrawlRequest,
@@ -12,14 +12,22 @@ from crawling_mcp.domain.models import (
     ScrapePageRequest,
 )
 from crawling_mcp.ports.crawler import CrawlerEngine
+from crawling_mcp.ports.robots import RobotsPolicy
 
 
 class AdaptiveCrawlerEngine:
     """Try low-cost HTTP crawling and fall back to a browser when needed."""
 
-    def __init__(self, *, http: CrawlerEngine, browser: CrawlerEngine) -> None:
+    def __init__(
+        self,
+        *,
+        http: CrawlerEngine,
+        browser: CrawlerEngine,
+        robots: RobotsPolicy | None = None,
+    ) -> None:
         self._http = http
         self._browser = browser
+        self._robots = robots
 
     @staticmethod
     def _needs_browser(snapshot: PageSnapshot) -> bool:
@@ -40,6 +48,14 @@ class AdaptiveCrawlerEngine:
 
     async def crawl(self, request: CrawlRequest, context: CrawlContext) -> CrawlResult:
         """Probe the start page and choose one traversal strategy for the job."""
+        if request.respect_robots_txt:
+            if self._robots is None:
+                raise NavigationError(
+                    url=request.start_url,
+                    reason="robots_policy_not_configured",
+                )
+            if not await self._robots.allowed(request.start_url):
+                raise NavigationError(url=request.start_url, reason="robots_disallowed")
         probe_request = ScrapePageRequest(
             url=request.start_url,
             crawl_mode=CrawlMode.HTTP,

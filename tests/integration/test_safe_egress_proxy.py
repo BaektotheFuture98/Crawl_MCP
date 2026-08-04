@@ -48,9 +48,12 @@ async def redirect_server() -> AsyncIterator[int]:
                     b"Content-Length: 0\r\nConnection: close\r\n\r\n"
                 )
             else:
-                body = b"safe"
+                body = b"x" * 1024 if path == b"/large" else b"safe"
                 response = (
-                    b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\n" + body
+                    b"HTTP/1.1 200 OK\r\nContent-Length: "
+                    + str(len(body)).encode()
+                    + b"\r\nConnection: close\r\n\r\n"
+                    + body
                 )
             writer.write(response)
             await writer.drain()
@@ -196,3 +199,51 @@ async def test_browser_subresources_cannot_bypass_policy_proxy() -> None:
     finally:
         await browser.close()
         await proxy.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_proxy_caps_bytes_received_from_one_upstream_connection() -> None:
+    validator = SelectiveValidator()
+    proxy = SafeEgressProxy(validator=validator, max_upstream_bytes=100)
+    await proxy.start()
+    try:
+        async with (
+            redirect_server() as port,
+            httpx.AsyncClient(proxy=proxy.url) as client,
+        ):
+            with pytest.raises(httpx.RemoteProtocolError):
+                await client.get(f"http://allowed.test:{port}/large")
+    finally:
+        await proxy.close()
+
+
+class HangingProxy(SafeEgressProxy):
+    def __init__(self, validator: SelectiveValidator) -> None:
+        super().__init__(validator=validator)
+        self.connect_started = asyncio.Event()
+
+    async def _connect(
+        self, target: ValidatedUrl
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        self.connect_started.set()
+        await asyncio.sleep(60)
+        raise AssertionError("unreachable")
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_proxy_close_cancels_active_client_handlers() -> None:
+    proxy = HangingProxy(SelectiveValidator())
+    await proxy.start()
+    proxy_port = int(urlsplit(proxy.url).port or 0)
+    reader, writer = await asyncio.open_connection("127.0.0.1", proxy_port)
+    writer.write(b"GET http://allowed.test/ HTTP/1.1\r\nHost: allowed.test\r\n\r\n")
+    await writer.drain()
+    await asyncio.wait_for(proxy.connect_started.wait(), timeout=1)
+
+    await asyncio.wait_for(proxy.close(), timeout=1)
+
+    assert await asyncio.wait_for(reader.read(), timeout=1) == b""
+    writer.close()
+    await writer.wait_closed()

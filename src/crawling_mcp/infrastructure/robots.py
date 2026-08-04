@@ -53,6 +53,12 @@ class RobotsTxtChecker:
             raise NavigationError(url=robots_url, reason="robots_fetch_failed") from error
         if response.status_code in {401, 403}:
             parser.parse(["User-agent: *", "Disallow: /"])
+        elif response.status_code in {408, 429} or response.status_code >= 500:
+            raise NavigationError(
+                url=robots_url,
+                reason="robots_unavailable",
+                status_code=response.status_code,
+            )
         elif response.status_code >= 400:
             parser.parse(["User-agent: *", "Disallow:"])
         else:
