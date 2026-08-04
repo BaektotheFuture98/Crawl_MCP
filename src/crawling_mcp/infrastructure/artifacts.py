@@ -43,6 +43,18 @@ def _write_atomic_text(path: Path, text: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _reserve_failure_folder(root: Path, job_id: UUID) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    job_folder = root / str(job_id)
+    try:
+        job_folder.mkdir()
+        return job_folder
+    except FileExistsError:
+        unique_folder = job_folder / f"failure-{uuid4().hex}"
+        unique_folder.mkdir(parents=True)
+        return unique_folder
+
+
 class FailureArtifactWriter:
     """Persist redacted failure diagnostics without masking the original error."""
 
@@ -59,12 +71,13 @@ class FailureArtifactWriter:
         sensitive_values: tuple[str, ...] = (),
     ) -> ArtifactPaths:
         """Best-effort capture of JSON, HTML, PNG and accessibility diagnostics."""
-        folder = self._root / str(job_id)
-        error_path = folder / "error.json"
-        paths = ArtifactPaths(error_json=str(error_path))
+        intended_folder = self._root / str(job_id)
+        paths = ArtifactPaths(error_json=str(intended_folder / "error.json"))
         safe_error = mask_sensitive(error.to_response(job_id).model_dump(mode="json"))
         try:
-            await asyncio.to_thread(folder.mkdir, parents=True, exist_ok=True)
+            folder = await asyncio.to_thread(_reserve_failure_folder, self._root, job_id)
+            error_path = folder / "error.json"
+            paths.error_json = str(error_path)
             await asyncio.to_thread(
                 _write_atomic_text,
                 error_path,

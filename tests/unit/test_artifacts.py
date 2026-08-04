@@ -61,3 +61,18 @@ async def test_failure_writer_never_replaces_original_error_on_filesystem_failur
     paths = await writer.capture(uuid4(), AuthenticationFailedError(reason="original"))
 
     assert paths.error_json.endswith("error.json")
+
+
+@pytest.mark.asyncio
+async def test_failure_writer_keeps_concurrent_page_artifacts_distinct(tmp_path: Path) -> None:
+    writer = FailureArtifactWriter(tmp_path)
+    job_id = uuid4()
+
+    first, second = await asyncio.gather(
+        writer.capture(job_id, AuthenticationFailedError(reason="first"), page=FakePage()),
+        writer.capture(job_id, AuthenticationFailedError(reason="second"), page=FakePage()),
+    )
+
+    assert first.error_json != second.error_json
+    assert await asyncio.to_thread(Path(first.error_json).is_file)
+    assert await asyncio.to_thread(Path(second.error_json).is_file)
