@@ -2,106 +2,105 @@
 
 마지막 갱신: 2026-08-04 (Asia/Seoul)
 
-## 저장소와 작업 위치
+## 저장소와 재개 위치
 
 - 원격 저장소: `https://github.com/BaektotheFuture98/Crawl_MCP.git`
 - 작업 브랜치: `feature/crawling-mcp`
-- 작업 worktree: `/Users/seonminbaek/openup/mcp_crawl/python-crawling-mcp/.worktrees/crawling-mcp`
 - 기준 브랜치: `main`
-- 현재 체크포인트 HEAD: 이 문서를 추가하는 커밋
+- 작업 worktree: `/Users/seonminbaek/openup/mcp_crawl/python-crawling-mcp/.worktrees/crawling-mcp`
+- 이 문서 직전 구현 체크포인트: `38bcb95`
 
-## 구현 완료 범위
-
-- Python 3.12+, uv lockfile, MCP SDK, Crawlee, Playwright, Pydantic v2 기반 프로젝트 구성
-- FastMCP STDIO 서버와 서버 lifespan 기반 공유 Chromium 관리
-- `scrape_page`, `crawl_site`, `validate_session`, `list_supported_sites` Tool
-- Domain/Application/Ports/Infrastructure Adapter로 분리한 헥사고날 구조
-- HTTP, browser, adaptive crawler 전략과 factory
-- Crawlee RequestQueue 및 START/LIST/DETAIL Router label
-- URL 정규화, DNS/IP 기반 SSRF 기본 차단, allowlist, 링크 정책
-- Generic/Example extractor와 domain registry
-- InMemory/File repository와 atomic JSON persistence
-- YAML 인증 profile, 환경변수 secret 조회, Playwright storage state 재사용
-- resilient login locator와 명시적 로그인 성공 확인
-- FastAPI 개발용 로그인 테스트 사이트
-- 실패 error/HTML/screenshot/accessibility artifact 저장과 credential redaction
-- Dockerfile, Docker Compose, README, 단위·Playwright 통합 테스트
-
-## 최근 분리 커밋
-
-- `fix(security): handle IPv6 literals safely`
-- `fix(auth): harden session reuse and failure artifacts`
-- `fix(crawler): isolate queues and enforce retry controls`
-- `fix(mcp): return safe validation and internal errors`
-- `fix(storage): serialize atomic result persistence`
-- `feat(observability): add job-scoped crawl logging`
-
-## 마지막 확인 결과
-
-다음 결과는 이 체크포인트를 만들기 직전에 확인했다.
-
-```text
-Ruff check: passed
-Ruff format --check: passed
-mypy src: passed (47 source files)
-default pytest: 71 passed, 9 deselected
-Playwright integration: 9 passed, 71 deselected
-RequestQueue cleanup targeted integration: 1 passed
-docker compose config --quiet: passed (독립 리뷰 실행 환경)
-```
-
-완료 선언 전에는 아래 전체 명령을 반드시 새로 실행해야 한다.
+재개할 때 먼저 실행한다.
 
 ```bash
-uv sync --locked
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy src
-uv run pytest
-uv run pytest -m integration
-docker compose build
-docker compose config
+cd /Users/seonminbaek/openup/mcp_crawl/python-crawling-mcp/.worktrees/crawling-mcp
+git status --short --branch
+git log --oneline -15
+git fetch origin
 ```
 
-## 독립 코드 리뷰 결과와 남은 작업
+## 완료된 구현
 
-현재 상태는 체크포인트이며 아직 `main` 병합 준비가 끝나지 않았다.
+- Python 3.12, uv lockfile, MCP SDK 1.29.0, Crawlee 1.9.0, Playwright 1.62.0 프로젝트
+- FastMCP STDIO 서버와 lifespan 기반 공유 Playwright/Chromium/egress proxy 관리
+- `scrape_page`, `crawl_site`, `validate_session`, `list_supported_sites` Tool
+- Domain/Application/Ports/Infrastructure Adapter로 분리한 헥사고날 구조
+- HTTP, browser, adaptive 전략과 factory, 사이트별 START/LIST/DETAIL navigation registry
+- Crawlee RequestQueue, 브라우저 bounded worker queue, max pages/depth/retries/concurrency/delay
+- HTTP와 browser robots.txt 정책, include/exclude, same-domain, URL 정규화·중복 제거
+- Generic/Example extractor와 domain registry
+- InMemory/File repository, atomic JSON persistence, page 단위 성공·실패 집계
+- YAML 인증 profile, 환경변수 secret, Playwright storage state 저장·재사용·만료 후 재로그인
+- profile별 refresh lock, 고유 임시 파일, 0600 권한, `{profile}.json` 경로 강제
+- resilient login locator와 명시적 로그인 성공 검증
+- FastAPI 개발용 로그인/목록/상세/robots/concurrency/retry 테스트 사이트
+- best-effort 실패 error/HTML/screenshot/accessibility artifact와 credential redaction
+- 구조화된 domain/MCP 오류, transport 단계 type validation 오류 변환, terminal job correlation
+- 운영 상한, DNS timeout, 요청 timeout, 전체 작업 deadline
+- URL/DNS SSRF 방어와 검증 IP에 직접 연결하는 loopback egress proxy
+- redirect 및 Chromium iframe·이미지·스크립트 등 하위 리소스의 동일 egress 정책
+- production-safe Docker Compose와 private network를 명시적으로 허용하는 test override
+- Dockerfile, `.env.example`, README, 단위·Playwright 통합 테스트
 
-### 병합 차단 보안 작업
+## 최근 Conventional Commits
 
-1. HTTP redirect와 Playwright redirect/subresource 요청을 실제 네트워크 전송 전에 검증한다.
-2. DNS 검증 결과와 실제 연결 사이의 rebinding 가능성을 transport/egress 경계에서 차단한다.
-3. 기본 Docker Compose에서 `ALLOW_PRIVATE_NETWORKS=true`를 제거하고 테스트 전용 override/profile로 분리한다.
+```text
+38bcb95 docs: sync runtime limits and security controls
+f30772b fix(crawler): retry transient browser failures
+eeccfbf fix(storage): avoid blocking repository lookups
+71933b5 fix(mcp): structure transport validation errors
+eb053e2 fix(security): strengthen URL and log sanitization
+1007e9a feat(crawler): add robots-aware concurrent navigation
+66f233b fix(core): enforce job limits and page accounting
+d815863 fix(auth): serialize session refresh and preserve failures
+38af434 fix(security): enforce policy at the egress boundary
+51eed00 fix(docker): keep private networking disabled by default
+```
 
-### 중요 기능·정합성 작업
+## 최신 검증 결과
 
-1. Browser crawl에도 robots 정책을 적용하고 concurrency 옵션의 실제 의미를 명확히 한다.
-2. site crawl의 adaptive HTTP→browser 판단을 단일 페이지와 같은 수준으로 보강한다.
-3. crawl 실패/timeout을 repository에 terminal 상태로 저장하고 MCP 오류의 `job_id`와 artifact를 연계한다.
-4. FastMCP transport 단계 validation도 일관된 구조화 오류로 변환하고 limit 오류 코드를 구분한다.
-5. 설정 기반 운영 상한과 DNS/검증/추출을 포함한 전체 deadline을 구현한다.
-6. 인증 storage state 동시 갱신을 lock/고유 temp file로 보호하고 `{profile}.json` 규칙을 강제한다.
-7. artifact 저장 자체의 실패가 원래 domain error를 덮지 않도록 전체 capture를 best-effort로 만든다.
-8. 사이트별 page classifier/link policy port와 Router handler 분리를 구현한다.
-9. page 수와 extractor item 수를 분리해 visited/succeeded/max_pages 집계를 바로잡는다.
-10. redirect, rebinding, subresource, robots, timeout, include/exclude, lifecycle에 대한 적대적 테스트를 추가한다.
+2026-08-04에 아래 명령을 새로 실행했다.
 
-### 소규모 보강
+```text
+uv sync --locked: passed (Python 3.12.12, 77 packages audited)
+uv run ruff check .: passed
+uv run ruff format --check .: passed (80 files)
+uv run mypy src: passed (51 source files)
+uv run pytest: 93 passed, 16 deselected
+uv run pytest -m integration: 16 passed, 93 deselected
+docker compose config --quiet: passed
+docker compose test override config --quiet: passed
+docker compose build: passed
+docker compose run --rm -T mcp-server: passed (STDIO start and clean EOF shutdown)
+```
 
-- `set-cookie`, `proxy-authorization`, `access_token`, `api_key` 등 masking key를 확장한다.
-- URL parse 전에 C0 control character를 명시적으로 거부한다.
-- browser start 실패와 container close 실패 시 lifecycle cleanup을 보장한다.
-- 최종 동작에 맞춰 README 보안·동시성 설명을 다시 검증한다.
+통합 테스트는 공개 수집, 로그인, 저장 세션 재사용, 만료 후 재로그인, 목록·상세 탐색,
+max pages/depth/concurrency, robots.txt, include/exclude·중복 제거, transient 5xx retry,
+실패 artifact, redirect 및 browser subresource SSRF를 포함한다.
 
-## 다음 재개 순서
+## 독립 리뷰 조치 내역
 
-1. `git status --short`와 이 문서를 읽어 체크포인트를 확인한다.
-2. transport-boundary SSRF 테스트를 먼저 작성하고 실패를 확인한다.
-3. HTTP redirect 검증과 Playwright request interception/egress 방어를 구현한다.
-4. Docker production/test Compose 구성을 분리하고 packaging test를 갱신한다.
-5. 나머지 중요 리뷰 항목을 하나씩 테스트 우선으로 수정한다.
-6. 전체 로컬·Docker 검증 후 `superpowers:requesting-code-review`를 다시 수행한다.
-7. 리뷰 차단 항목이 없을 때만 `feature/crawling-mcp`를 `main`에 통합하고 `origin/main`에 push한다.
+초기 독립 리뷰의 병합 차단 항목은 다음과 같이 조치했다.
+
+- DNS 검증과 실제 연결 사이의 rebinding 가능성: 검증 IP pinning egress proxy 도입
+- HTTP/Chromium redirect와 subresource 우회: 모든 outbound HTTP(S)를 proxy에 강제
+- Docker 기본 사설망 허용: 기본 false, test override/profile에서만 제한적으로 true
+- browser robots/concurrency 미적용: robots checker와 bounded worker queue 적용
+- auto site crawl 비적응: HTTP start probe 후 browser 선택
+- job failure/timeout 미저장: job ID를 먼저 만들고 terminal failure까지 repository에 저장
+- 인증 state 경쟁: profile lock, atomic unique temp, mode 0600 적용
+- artifact 실패가 원본 오류를 대체: 전체 capture를 best-effort 처리
+- item 수와 page 수 혼용: page outcome count를 별도 저장
+- transport validation bypass: FastMCP 경계의 구조화 오류 변환 추가
+
+## 남은 절차
+
+기능 구현과 로컬·Docker 검증은 완료 상태다. `main` 통합 전 절차만 남아 있다.
+
+1. 현재 HEAD에 대한 두 번째 독립 코드 리뷰 결과를 확인한다.
+2. merge blocker가 있으면 테스트 우선으로 수정하고 위 전체 검증을 다시 실행한다.
+3. blocker가 없으면 `feature/crawling-mcp`를 `main`에 통합한다.
+4. `origin/main`과 feature branch를 push하고 최종 상태를 이 문서에 기록한다.
 
 ## 참고 문서
 
