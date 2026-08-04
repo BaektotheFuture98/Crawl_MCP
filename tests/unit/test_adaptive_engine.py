@@ -16,12 +16,14 @@ class FakeEngine:
     def __init__(self, snapshot: PageSnapshot) -> None:
         self.snapshot = snapshot
         self.scrape_calls = 0
+        self.crawl_calls = 0
 
     async def scrape(self, request: ScrapePageRequest, context: CrawlContext) -> PageSnapshot:
         self.scrape_calls += 1
         return self.snapshot
 
     async def crawl(self, request: CrawlRequest, context: CrawlContext) -> CrawlResult:
+        self.crawl_calls += 1
         return CrawlResult(start_url=request.start_url)
 
 
@@ -55,3 +57,39 @@ async def test_adaptive_falls_back_for_javascript_shell() -> None:
 
     assert snapshot is browser.snapshot
     assert browser.scrape_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_adaptive_site_crawl_uses_probe_to_fallback_for_dynamic_start() -> None:
+    http = FakeEngine(
+        PageSnapshot(url="https://example.com", html="<div id='root'></div><script></script>")
+    )
+    browser = FakeEngine(PageSnapshot(url="https://example.com", html="rendered"))
+    adaptive = AdaptiveCrawlerEngine(http=http, browser=browser)
+
+    await adaptive.crawl(
+        CrawlRequest(start_url="https://example.com"),
+        CrawlContext(domain="example.com"),
+    )
+
+    assert http.scrape_calls == 1
+    assert http.crawl_calls == 0
+    assert browser.crawl_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_adaptive_site_crawl_keeps_http_for_meaningful_start() -> None:
+    http = FakeEngine(
+        PageSnapshot(url="https://example.com", html=f"<main>{'content ' * 30}</main>")
+    )
+    browser = FakeEngine(PageSnapshot(url="https://example.com", html="rendered"))
+    adaptive = AdaptiveCrawlerEngine(http=http, browser=browser)
+
+    await adaptive.crawl(
+        CrawlRequest(start_url="https://example.com"),
+        CrawlContext(domain="example.com"),
+    )
+
+    assert http.scrape_calls == 1
+    assert http.crawl_calls == 1
+    assert browser.crawl_calls == 0

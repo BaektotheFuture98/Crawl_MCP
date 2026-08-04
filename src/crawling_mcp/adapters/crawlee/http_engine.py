@@ -128,12 +128,14 @@ class HttpCrawlerEngine:
             depth = int(depth_value) if isinstance(depth_value, int | str) else 0
             snapshot = self._snapshot(crawling_context, depth=depth)
             await self._validator.validate(snapshot.url)
-            snapshot.page_type = self._router.classify(snapshot)
+            snapshot.page_type = self._router.classify(snapshot, domain=context.domain)
             result.items.extend(await extractor.extract(snapshot))
+            result.visited_pages += 1
+            result.succeeded_pages += 1
             if request.request_delay_seconds:
                 await asyncio.sleep(request.request_delay_seconds)
             queued: list[Request] = []
-            for link in snapshot.links:
+            for link in self._router.links(snapshot, domain=context.domain):
                 try:
                     normalized = normalize_url(
                         link, remove_tracking=request.remove_tracking_parameters
@@ -147,7 +149,10 @@ class HttpCrawlerEngine:
                     if normalized in seen or len(seen) >= request.max_pages:
                         continue
                     seen.add(normalized)
-                label = self._router.classify(PageSnapshot(url=normalized, html="")).value
+                label = self._router.classify(
+                    PageSnapshot(url=normalized, html=""),
+                    domain=context.domain,
+                ).value
                 queued.append(
                     Request.from_url(
                         normalized,
@@ -158,9 +163,19 @@ class HttpCrawlerEngine:
             if queued:
                 await crawling_context.add_requests(queued)
 
+        async def handle_start(crawling_context: BeautifulSoupCrawlingContext) -> None:
+            await handle(crawling_context)
+
+        async def handle_list(crawling_context: BeautifulSoupCrawlingContext) -> None:
+            await handle(crawling_context)
+
+        async def handle_detail(crawling_context: BeautifulSoupCrawlingContext) -> None:
+            await handle(crawling_context)
+
         crawler.router.default_handler(handle)
-        for label in PageType:
-            crawler.router.handler(label.value)(handle)
+        crawler.router.handler(PageType.START.value)(handle_start)
+        crawler.router.handler(PageType.LIST.value)(handle_list)
+        crawler.router.handler(PageType.DETAIL.value)(handle_detail)
 
         @crawler.failed_request_handler
         async def failed(
@@ -175,6 +190,8 @@ class HttpCrawlerEngine:
                     details={"error_type": type(error).__name__},
                 )
             )
+            result.visited_pages += 1
+            result.failed_pages += 1
 
         start = Request.from_url(
             request.start_url,

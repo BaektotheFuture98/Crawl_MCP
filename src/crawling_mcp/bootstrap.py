@@ -8,7 +8,11 @@ from crawling_mcp.adapters.crawlee.adaptive_engine import AdaptiveCrawlerEngine
 from crawling_mcp.adapters.crawlee.browser_engine import BrowserCrawlerEngine
 from crawling_mcp.adapters.crawlee.factory import CrawlerFactory
 from crawling_mcp.adapters.crawlee.http_engine import HttpCrawlerEngine
-from crawling_mcp.adapters.crawlee.router import PageRouter
+from crawling_mcp.adapters.crawlee.router import (
+    ExampleNavigationAdapter,
+    NavigationRegistry,
+    PageRouter,
+)
 from crawling_mcp.adapters.extractors.example import ExampleExtractor
 from crawling_mcp.adapters.extractors.generic import GenericExtractor
 from crawling_mcp.adapters.extractors.registry import ExtractorRegistry
@@ -17,6 +21,7 @@ from crawling_mcp.adapters.storage.memory_repository import InMemoryRepository
 from crawling_mcp.application.auth_service import AuthService
 from crawling_mcp.application.crawl_service import CrawlService
 from crawling_mcp.domain.models import (
+    CrawlLimits,
     CrawlRequest,
     CrawlResult,
     PageItem,
@@ -27,6 +32,7 @@ from crawling_mcp.infrastructure.artifacts import FailureArtifactWriter
 from crawling_mcp.infrastructure.browser import BrowserManager
 from crawling_mcp.infrastructure.config import Settings
 from crawling_mcp.infrastructure.egress_proxy import SafeEgressProxy
+from crawling_mcp.infrastructure.robots import RobotsTxtChecker
 from crawling_mcp.infrastructure.security import UrlSecurityValidator
 from crawling_mcp.ports.repository import CrawlRepository
 
@@ -109,9 +115,11 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
     validator = UrlSecurityValidator(
         domain_allowlist=configured.domain_allowlist,
         allow_private_networks=configured.allow_private_networks,
+        resolver_timeout_seconds=configured.dns_timeout_seconds,
     )
     egress_proxy = SafeEgressProxy(validator=validator)
     extractors = ExtractorRegistry(default=GenericExtractor())
+    navigation = NavigationRegistry()
     auth_registry = AuthRegistry(default=NoAuthAdapter())
     profiles = AuthProfileStore.from_yaml(configured.auth_profiles_path)
     for profile_name in profiles.names():
@@ -121,6 +129,7 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
                 profile.domain, ExampleLoginAdapter(configured.test_site_base_url)
             )
             extractors.register(profile.domain, ExampleExtractor())
+            navigation.register(profile.domain, ExampleNavigationAdapter())
     repository: CrawlRepository
     if configured.repository == "memory":
         repository = InMemoryRepository()
@@ -139,7 +148,8 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
         auth_root=configured.data_dir / "auth",
         artifacts=artifacts,
     )
-    router = PageRouter()
+    router = PageRouter(registry=navigation)
+    robots = RobotsTxtChecker(validator=validator, egress_proxy=egress_proxy)
     http_engine = HttpCrawlerEngine(
         validator=validator,
         extractors=extractors,
@@ -152,6 +162,7 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
         browser=browser,
         router=router,
         artifacts=artifacts,
+        robots=robots,
     )
     adaptive_engine = AdaptiveCrawlerEngine(http=http_engine, browser=browser_engine)
     factory = CrawlerFactory(http=http_engine, browser=browser_engine, adaptive=adaptive_engine)
@@ -161,6 +172,14 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
         extractors=extractors,
         repository=repository,
         auth=auth_service,
+        limits=CrawlLimits(
+            max_pages=configured.max_pages_limit,
+            max_depth=configured.max_depth_limit,
+            max_request_retries=configured.max_request_retries_limit,
+            request_timeout_seconds=configured.request_timeout_limit_seconds,
+            job_timeout_seconds=configured.job_timeout_limit_seconds,
+            max_concurrency=configured.max_concurrency_limit,
+        ),
     )
     return ApplicationContainer(
         settings=configured,

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import secrets
 from dataclasses import dataclass, field
 
 import uvicorn
 from fastapi import Cookie, FastAPI, Form, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 
 
 @dataclass(slots=True)
@@ -17,6 +18,8 @@ class TestSiteState:
     password: str
     sessions: set[str] = field(default_factory=set)
     login_count: int = 0
+    active_requests: int = 0
+    max_active_requests: int = 0
 
 
 def _page(title: str, body: str) -> str:
@@ -42,6 +45,10 @@ def create_test_site(*, username: str = "test-user", password: str = "test-passw
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/robots.txt", response_class=PlainTextResponse)
+    async def robots() -> str:
+        return "User-agent: *\nDisallow: /test-site/detail/2\n"
 
     @app.get("/test-site/login", response_class=HTMLResponse)
     async def login_page(variant: str = "default") -> str:
@@ -101,6 +108,26 @@ def create_test_site(*, username: str = "test-user", password: str = "test-passw
             <button type="submit">로그아웃</button></form>""",
         )
 
+    @app.get("/test-site/concurrency-list", response_class=HTMLResponse)
+    async def concurrency_list(session: str | None = Cookie(default=None)) -> str:
+        require_session(session)
+        return _page(
+            "동시성 목록",
+            """<a href="/test-site/slow/1">느린 1</a>
+            <a href="/test-site/slow/2">느린 2</a>""",
+        )
+
+    @app.get("/test-site/slow/{item_id}", response_class=HTMLResponse)
+    async def slow_detail(item_id: int, session: str | None = Cookie(default=None)) -> str:
+        require_session(session)
+        state.active_requests += 1
+        state.max_active_requests = max(state.max_active_requests, state.active_requests)
+        try:
+            await asyncio.sleep(0.2)
+            return _page(f"느린 {item_id}", f"<h1>느린 항목 {item_id}</h1>")
+        finally:
+            state.active_requests -= 1
+
     @app.post("/test-site/logout")
     async def logout(session: str | None = Cookie(default=None)) -> RedirectResponse:
         if session is not None:
@@ -117,6 +144,10 @@ def create_test_site(*, username: str = "test-user", password: str = "test-passw
     @app.get("/__test__/login-count")
     async def login_count() -> dict[str, int]:
         return {"login_count": state.login_count}
+
+    @app.get("/__test__/max-active")
+    async def max_active() -> dict[str, int]:
+        return {"max_active_requests": state.max_active_requests}
 
     return app
 

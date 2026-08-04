@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from urllib.parse import urljoin
 
+import structlog
 from playwright.async_api import BrowserContext, Page
 
 from crawling_mcp.adapters.crawlee.router import PageRouter
@@ -16,11 +17,12 @@ from crawling_mcp.domain.models import (
     ScrapePageRequest,
 )
 from crawling_mcp.domain.policies import LinkPolicy, normalize_url
-from crawling_mcp.infrastructure.artifacts import FailureArtifactWriter
 from crawling_mcp.infrastructure.logging import mask_sensitive
+from crawling_mcp.ports.artifacts import FailureArtifactPort
 from crawling_mcp.ports.browser import BrowserManagerPort
 from crawling_mcp.ports.crawler import UrlValidator
 from crawling_mcp.ports.extractor import ExtractorResolver
+from crawling_mcp.ports.robots import RobotsPolicy
 
 
 class BrowserCrawlerEngine:
@@ -33,13 +35,32 @@ class BrowserCrawlerEngine:
         extractors: ExtractorResolver,
         browser: BrowserManagerPort,
         router: PageRouter | None = None,
-        artifacts: FailureArtifactWriter | None = None,
+        artifacts: FailureArtifactPort | None = None,
+        robots: RobotsPolicy | None = None,
     ) -> None:
         self._validator = validator
         self._extractors = extractors
         self._browser = browser
         self._router = router or PageRouter()
         self._artifacts = artifacts
+        self._robots = robots
+        self._log = structlog.get_logger(__name__)
+
+    async def _capture_artifacts(
+        self, context: CrawlContext, error: CrawlError, page: Page
+    ) -> dict[str, str]:
+        if self._artifacts is None:
+            return {}
+        try:
+            paths = await self._artifacts.capture(context.job_id, error, page=page)
+        except Exception as artifact_error:
+            self._log.error(
+                "crawl_artifact_capture_failed",
+                job_id=str(context.job_id),
+                error_type=type(artifact_error).__name__,
+            )
+            return {}
+        return {key: value for key, value in paths.model_dump().items() if value is not None}
 
     async def _navigate(self, page: Page, url: str, timeout_seconds: int) -> PageSnapshot:
         await self._validator.validate(url)
@@ -73,8 +94,7 @@ class BrowserCrawlerEngine:
                 if isinstance(error, CrawlError)
                 else NavigationError(url=request.url, reason=type(error).__name__)
             )
-            if self._artifacts is not None:
-                await self._artifacts.capture(context.job_id, domain_error, page=page)
+            await self._capture_artifacts(context, domain_error, page)
             raise domain_error from error
         finally:
             await page.close()
@@ -103,14 +123,35 @@ class BrowserCrawlerEngine:
         seen = {
             normalize_url(request.start_url, remove_tracking=request.remove_tracking_parameters)
         }
-        while not queue.empty() and len(result.items) + len(result.failures) < request.max_pages:
-            url, depth = await queue.get()
+        seen_lock = asyncio.Lock()
+        result_lock = asyncio.Lock()
+        pace_lock = asyncio.Lock()
+        next_request_at = 0.0
+
+        async def pace() -> None:
+            nonlocal next_request_at
+            if not request.request_delay_seconds:
+                return
+            async with pace_lock:
+                loop = asyncio.get_running_loop()
+                wait_seconds = next_request_at - loop.time()
+                if wait_seconds > 0:
+                    await asyncio.sleep(wait_seconds)
+                next_request_at = loop.time() + request.request_delay_seconds
+
+        async def process(url: str, depth: int) -> None:
             page = await browser_context.new_page()
             try:
+                if request.respect_robots_txt:
+                    if self._robots is None:
+                        raise NavigationError(url=url, reason="robots_policy_not_configured")
+                    if not await self._robots.allowed(url):
+                        raise NavigationError(url=url, reason="robots_disallowed")
                 snapshot: PageSnapshot | None = None
                 last_error: Exception | None = None
                 for attempt in range(request.max_request_retries + 1):
                     try:
+                        await pace()
                         snapshot = await self._navigate(page, url, request.request_timeout_seconds)
                         break
                     except Exception as error:
@@ -123,9 +164,13 @@ class BrowserCrawlerEngine:
                         reason=(type(last_error).__name__ if last_error else "no_response"),
                     )
                 snapshot.depth = depth
-                snapshot.page_type = self._router.classify(snapshot)
-                result.items.extend(await extractor.extract(snapshot))
-                for link in snapshot.links:
+                snapshot.page_type = self._router.classify(snapshot, domain=context.domain)
+                items = await extractor.extract(snapshot)
+                async with result_lock:
+                    result.items.extend(items)
+                    result.visited_pages += 1
+                    result.succeeded_pages += 1
+                for link in self._router.links(snapshot, domain=context.domain):
                     try:
                         normalized = normalize_url(
                             urljoin(snapshot.url, link),
@@ -136,39 +181,51 @@ class BrowserCrawlerEngine:
                         await self._validator.validate(normalized)
                     except CrawlError:
                         continue
-                    if len(seen) >= request.max_pages:
-                        break
-                    seen.add(normalized)
+                    async with seen_lock:
+                        if normalized in seen or len(seen) >= request.max_pages:
+                            continue
+                        seen.add(normalized)
                     await queue.put((normalized, depth + 1))
-                if request.request_delay_seconds:
-                    await asyncio.sleep(request.request_delay_seconds)
             except Exception as error:
                 domain_error = (
                     error
                     if isinstance(error, CrawlError)
                     else NavigationError(url=url, reason=type(error).__name__)
                 )
-                artifact_values: dict[str, str] = {}
-                if self._artifacts is not None:
-                    artifact_paths = await self._artifacts.capture(
-                        context.job_id, domain_error, page=page
+                artifact_values = await self._capture_artifacts(context, domain_error, page)
+                async with result_lock:
+                    result.failures.append(
+                        CrawlFailure(
+                            url=url,
+                            error_code=domain_error.code,
+                            message=domain_error.message,
+                            details=mask_sensitive(domain_error.details),
+                            artifacts=artifact_values,
+                        )
                     )
-                    artifact_values = {
-                        key: value
-                        for key, value in artifact_paths.model_dump().items()
-                        if value is not None
-                    }
-                result.failures.append(
-                    CrawlFailure(
-                        url=url,
-                        error_code=domain_error.code,
-                        message=domain_error.message,
-                        details=mask_sensitive(domain_error.details),
-                        artifacts=artifact_values,
-                    )
-                )
+                    result.visited_pages += 1
+                    result.failed_pages += 1
             finally:
                 await page.close()
+
+        async def worker() -> None:
+            while True:
+                url, depth = await queue.get()
+                try:
+                    await process(url, depth)
+                finally:
+                    queue.task_done()
+
+        workers = [
+            asyncio.create_task(worker())
+            for _ in range(min(request.max_concurrency, request.max_pages))
+        ]
+        try:
+            await queue.join()
+        finally:
+            for task in workers:
+                task.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
         return result
 
     async def crawl(self, request: CrawlRequest, context: CrawlContext) -> CrawlResult:

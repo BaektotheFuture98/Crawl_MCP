@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from crawling_mcp.adapters.crawlee.router import PageRouter
+from crawling_mcp.adapters.crawlee.router import NavigationRegistry, PageRouter
 from crawling_mcp.domain.enums import PageType
 from crawling_mcp.domain.models import PageSnapshot
 
@@ -24,3 +24,28 @@ def test_router_preserves_explicit_non_default_label() -> None:
     snapshot = PageSnapshot(url="https://example.com/anything", html="", page_type=PageType.LIST)
 
     assert router.classify(snapshot) is PageType.LIST
+
+
+class CustomNavigation:
+    name = "custom"
+
+    def classify(self, snapshot: PageSnapshot) -> PageType:
+        return PageType.LIST
+
+    def links(self, snapshot: PageSnapshot) -> list[str]:
+        return [link for link in snapshot.links if "/allowed/" in link]
+
+
+def test_router_delegates_classification_and_links_to_domain_adapter() -> None:
+    registry = NavigationRegistry()
+    registry.register("example.com", CustomNavigation())
+    router = PageRouter(registry=registry)
+    snapshot = PageSnapshot(
+        url="https://example.com/custom",
+        html="",
+        links=["https://example.com/allowed/1", "https://example.com/blocked/2"],
+    )
+
+    assert router.classify(snapshot, domain="example.com") is PageType.LIST
+    assert router.links(snapshot, domain="example.com") == ["https://example.com/allowed/1"]
+    assert registry.metadata()["example.com"] == "custom"

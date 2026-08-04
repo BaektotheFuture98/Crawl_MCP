@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from bs4 import BeautifulSoup
 
+from crawling_mcp.domain.enums import CrawlMode
+from crawling_mcp.domain.errors import CrawlError
 from crawling_mcp.domain.models import (
     CrawlContext,
     CrawlRequest,
@@ -37,7 +39,18 @@ class AdaptiveCrawlerEngine:
         return snapshot
 
     async def crawl(self, request: CrawlRequest, context: CrawlContext) -> CrawlResult:
-        """Use HTTP traversal unless it returns no usable items."""
+        """Probe the start page and choose one traversal strategy for the job."""
+        probe_request = ScrapePageRequest(
+            url=request.start_url,
+            crawl_mode=CrawlMode.HTTP,
+            request_timeout_seconds=request.request_timeout_seconds,
+        )
+        try:
+            probe = await self._http.scrape(probe_request, context)
+        except CrawlError:
+            return await self._browser.crawl(request, context)
+        if self._needs_browser(probe):
+            return await self._browser.crawl(request, context)
         result = await self._http.crawl(request, context)
         if not result.items and result.failures:
             return await self._browser.crawl(request, context)

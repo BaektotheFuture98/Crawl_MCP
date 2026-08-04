@@ -25,6 +25,7 @@ from crawling_mcp.domain.models import (
 )
 from crawling_mcp.infrastructure.artifacts import FailureArtifactWriter
 from crawling_mcp.infrastructure.browser import BrowserManager
+from crawling_mcp.infrastructure.robots import RobotsTxtChecker
 from crawling_mcp.infrastructure.security import UrlSecurityValidator
 
 
@@ -64,10 +65,12 @@ def make_auth_stack(
         secrets=secrets or FixedSecrets(),
         artifacts=FailureArtifactWriter(tmp_path / "failures"),
     )
+    validator = UrlSecurityValidator(allow_private_networks=True)
     engine = BrowserCrawlerEngine(
-        validator=UrlSecurityValidator(allow_private_networks=True),
+        validator=validator,
         extractors=extractors,
         browser=browser,
+        robots=RobotsTxtChecker(validator=validator),
     )
     return browser, auth, engine, state_path
 
@@ -220,5 +223,68 @@ async def test_max_depth_zero_does_not_visit_detail_links(
             )
         assert len(result.items) == 1
         assert result.items[0].title == "목록"
+    finally:
+        await browser.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_browser_crawl_respects_robots_txt(test_site_url: str, tmp_path: Path) -> None:
+    browser, auth, engine, _ = make_auth_stack(test_site_url, tmp_path)
+    await browser.start()
+    try:
+        async with auth.context_for("127.0.0.1", "reader") as browser_context:
+            result = await engine.crawl(
+                CrawlRequest(
+                    start_url=f"{test_site_url}/test-site/list",
+                    crawl_mode="browser",
+                    auth_profile="reader",
+                    max_pages=3,
+                    max_depth=1,
+                    request_delay_seconds=0,
+                    respect_robots_txt=True,
+                ),
+                CrawlContext(
+                    domain="127.0.0.1",
+                    authenticated=True,
+                    browser_context=browser_context,
+                ),
+            )
+        titles = {item.title for item in result.items}
+        assert "목록" in titles
+        assert "상세 1" in titles
+        assert "상세 2" not in titles
+    finally:
+        await browser.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_browser_crawl_honors_max_concurrency(test_site_url: str, tmp_path: Path) -> None:
+    browser, auth, engine, _ = make_auth_stack(test_site_url, tmp_path)
+    await browser.start()
+    try:
+        async with auth.context_for("127.0.0.1", "reader") as browser_context:
+            result = await engine.crawl(
+                CrawlRequest(
+                    start_url=f"{test_site_url}/test-site/concurrency-list",
+                    crawl_mode="browser",
+                    auth_profile="reader",
+                    max_pages=3,
+                    max_depth=1,
+                    max_concurrency=2,
+                    request_delay_seconds=0,
+                    respect_robots_txt=False,
+                ),
+                CrawlContext(
+                    domain="127.0.0.1",
+                    authenticated=True,
+                    browser_context=browser_context,
+                ),
+            )
+        async with httpx.AsyncClient(base_url=test_site_url) as client:
+            observed = (await client.get("/__test__/max-active")).json()
+        assert result.visited_pages == 3
+        assert observed["max_active_requests"] == 2
     finally:
         await browser.close()
