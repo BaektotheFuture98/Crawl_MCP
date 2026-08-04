@@ -123,6 +123,8 @@ class CrawlContext(BaseModel):
     job_id: UUID = Field(default_factory=uuid4)
     domain: str
     adapter_name: str = "generic"
+    authenticated: bool = False
+    browser_context: Any | None = None
 
 
 class AuthProfile(BaseModel):
