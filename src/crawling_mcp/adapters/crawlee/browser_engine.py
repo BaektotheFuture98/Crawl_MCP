@@ -68,6 +68,12 @@ class BrowserCrawlerEngine:
             url, wait_until="domcontentloaded", timeout=timeout_seconds * 1000
         )
         await self._validator.validate(page.url)
+        if response is not None and response.status >= 500:
+            raise NavigationError(
+                url=page.url,
+                reason="transient_http_status",
+                status_code=response.status,
+            )
         html = await page.content()
         links = await page.locator("a[href]").evaluate_all(
             "els => els.map(el => el.href).filter(Boolean)"

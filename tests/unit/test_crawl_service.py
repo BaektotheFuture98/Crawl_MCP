@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from crawling_mcp.adapters.extractors.generic import GenericExtractor
@@ -27,6 +29,12 @@ class RecordingValidator:
     async def validate(self, url: str) -> ValidatedUrl:
         self.urls.append(url)
         return ValidatedUrl(url=url, hostname="example.com", port=443, addresses=("93.184.216.34",))
+
+
+class SlowValidator(RecordingValidator):
+    async def validate(self, url: str) -> ValidatedUrl:
+        await asyncio.sleep(1)
+        return await super().validate(url)
 
 
 class FakeEngine:
@@ -165,3 +173,27 @@ async def test_crawl_service_counts_pages_independently_from_extracted_items() -
     assert len(result.items) == 2
     assert result.visited_pages == 1
     assert result.succeeded_pages == 1
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_deadline_includes_initial_validation_and_persists_timeout() -> None:
+    repository = InMemoryRepository()
+    service = CrawlService(
+        validator=SlowValidator(),
+        factory=FakeFactory(FakeEngine()),
+        extractors=ExtractorRegistry(default=GenericExtractor()),
+        repository=repository,
+    )
+    request = CrawlRequest(start_url="https://example.com").model_copy(
+        update={"job_timeout_seconds": 0.01}
+    )
+
+    with pytest.raises(NavigationError) as caught:
+        await service.crawl_site(request)
+
+    assert caught.value.details["reason"] == "job_timeout"
+    assert caught.value.job_id is not None
+    stored = await repository.get_job(caught.value.job_id)
+    assert stored is not None
+    assert stored.completed_at is not None
+    assert stored.failed_pages == 1

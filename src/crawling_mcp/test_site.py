@@ -20,6 +20,7 @@ class TestSiteState:
     login_count: int = 0
     active_requests: int = 0
     max_active_requests: int = 0
+    flaky_requests: int = 0
 
 
 def _page(title: str, body: str) -> str:
@@ -89,6 +90,8 @@ def create_test_site(*, username: str = "test-user", password: str = "test-passw
             "목록",
             """<h1>목록</h1><ul>
             <li><a href="/test-site/detail/1">상세 1</a></li>
+            <li><a href="/test-site/detail/1#duplicate">상세 1 fragment 중복</a></li>
+            <li><a href="/test-site/detail/1?utm_source=test">상세 1 tracking 중복</a></li>
             <li><a href="/test-site/detail/2">상세 2</a></li></ul>
             <form method="post" action="/test-site/logout">
             <button type="submit">로그아웃</button></form>""",
@@ -128,6 +131,14 @@ def create_test_site(*, username: str = "test-user", password: str = "test-passw
         finally:
             state.active_requests -= 1
 
+    @app.get("/test-site/flaky", response_class=HTMLResponse)
+    async def flaky(session: str | None = Cookie(default=None)) -> Response:
+        require_session(session)
+        state.flaky_requests += 1
+        if state.flaky_requests == 1:
+            return HTMLResponse("temporary failure", status_code=503)
+        return HTMLResponse(_page("재시도 성공", "<h1>재시도 성공</h1>"))
+
     @app.post("/test-site/logout")
     async def logout(session: str | None = Cookie(default=None)) -> RedirectResponse:
         if session is not None:
@@ -148,6 +159,10 @@ def create_test_site(*, username: str = "test-user", password: str = "test-passw
     @app.get("/__test__/max-active")
     async def max_active() -> dict[str, int]:
         return {"max_active_requests": state.max_active_requests}
+
+    @app.get("/__test__/flaky-count")
+    async def flaky_count() -> dict[str, int]:
+        return {"flaky_requests": state.flaky_requests}
 
     return app
 

@@ -288,3 +288,75 @@ async def test_browser_crawl_honors_max_concurrency(test_site_url: str, tmp_path
         assert observed["max_active_requests"] == 2
     finally:
         await browser.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_browser_crawl_applies_patterns_and_deduplicates_urls(
+    test_site_url: str, tmp_path: Path
+) -> None:
+    browser, auth, engine, _ = make_auth_stack(test_site_url, tmp_path)
+    await browser.start()
+    try:
+        async with auth.context_for("127.0.0.1", "reader") as browser_context:
+            result = await engine.crawl(
+                CrawlRequest(
+                    start_url=f"{test_site_url}/test-site/list",
+                    crawl_mode="browser",
+                    auth_profile="reader",
+                    max_pages=10,
+                    max_depth=1,
+                    include_patterns=[f"{test_site_url}/test-site/detail/*"],
+                    exclude_patterns=["*/test-site/detail/2"],
+                    request_delay_seconds=0,
+                    respect_robots_txt=False,
+                ),
+                CrawlContext(
+                    domain="127.0.0.1",
+                    authenticated=True,
+                    browser_context=browser_context,
+                ),
+            )
+
+        assert result.visited_pages == 2
+        assert [item.metadata.get("id") for item in result.items].count("1") == 1
+        assert all(item.metadata.get("id") != "2" for item in result.items)
+    finally:
+        await browser.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_browser_crawl_retries_transient_server_errors(
+    test_site_url: str, tmp_path: Path
+) -> None:
+    browser, auth, engine, _ = make_auth_stack(test_site_url, tmp_path)
+    await browser.start()
+    try:
+        async with auth.context_for("127.0.0.1", "reader") as browser_context:
+            result = await engine.crawl(
+                CrawlRequest(
+                    start_url=f"{test_site_url}/test-site/flaky",
+                    crawl_mode="browser",
+                    auth_profile="reader",
+                    max_pages=1,
+                    max_depth=0,
+                    max_request_retries=1,
+                    request_delay_seconds=0,
+                    respect_robots_txt=False,
+                ),
+                CrawlContext(
+                    domain="127.0.0.1",
+                    authenticated=True,
+                    browser_context=browser_context,
+                ),
+            )
+        async with httpx.AsyncClient(base_url=test_site_url) as client:
+            attempts = (await client.get("/__test__/flaky-count")).json()
+
+        assert result.succeeded_pages == 1
+        assert result.failed_pages == 0
+        assert result.items[0].title == "재시도 성공"
+        assert attempts == {"flaky_requests": 2}
+    finally:
+        await browser.close()

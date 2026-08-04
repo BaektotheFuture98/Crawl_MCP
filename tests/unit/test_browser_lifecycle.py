@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 
+from crawling_mcp.bootstrap import ApplicationContainer
 from crawling_mcp.infrastructure.browser import BrowserManager
 
 
@@ -86,3 +87,31 @@ async def test_browser_start_rolls_back_playwright_when_launch_fails() -> None:
         await manager.start()
 
     assert playwright.stopped
+
+
+class RecordingCloseResource:
+    def __init__(self, name: str, calls: list[str], *, fail: bool = False) -> None:
+        self._name = name
+        self._calls = calls
+        self._fail = fail
+
+    async def close(self) -> None:
+        self._calls.append(self._name)
+        if self._fail:
+            raise RuntimeError(f"{self._name} close failed")
+
+
+@pytest.mark.asyncio
+async def test_container_closes_browser_and_proxy_when_service_close_fails() -> None:
+    calls: list[str] = []
+    container = ApplicationContainer.__new__(ApplicationContainer)
+    container.crawl_service = RecordingCloseResource("service", calls, fail=True)  # type: ignore[assignment]
+    container.browser = RecordingCloseResource("browser", calls)  # type: ignore[assignment]
+    container.egress_proxy = RecordingCloseResource("proxy", calls)  # type: ignore[assignment]
+    container._started = True
+
+    with pytest.raises(RuntimeError, match="service close failed"):
+        await container.close()
+
+    assert calls == ["service", "browser", "proxy"]
+    assert container._started is False

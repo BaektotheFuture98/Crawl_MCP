@@ -67,6 +67,43 @@ async def redirect_server() -> AsyncIterator[int]:
         await server.wait_closed()
 
 
+@asynccontextmanager
+async def subresource_server() -> AsyncIterator[tuple[int, list[bytes]]]:
+    hits: list[bytes] = []
+    port = 0
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            request = await reader.readuntil(b"\r\n\r\n")
+            path = request.split(b" ", 2)[1]
+            hits.append(path)
+            if path == b"/subresource":
+                body = (
+                    f'<html><body><iframe src="http://blocked.test:{port}/private">'
+                    "</iframe></body></html>"
+                ).encode()
+            else:
+                body = b"private"
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: "
+                + str(len(body)).encode()
+                + b"\r\nConnection: close\r\n\r\n"
+                + body
+            )
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = int(server.sockets[0].getsockname()[1])
+    try:
+        yield port, hits
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_proxy_pins_validated_address_and_blocks_redirect_target() -> None:
@@ -123,6 +160,39 @@ async def test_http_and_browser_engines_cannot_bypass_policy_proxy() -> None:
                 )
 
         assert sum("blocked.test" in url for url in validator.urls) >= 2
+    finally:
+        await browser.close()
+        await proxy.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_browser_subresources_cannot_bypass_policy_proxy() -> None:
+    validator = SelectiveValidator()
+    proxy = SafeEgressProxy(validator=validator)
+    browser = BrowserManager(egress_proxy=proxy)
+    extractors = ExtractorRegistry(default=GenericExtractor())
+    await proxy.start()
+    await browser.start()
+    try:
+        async with subresource_server() as (port, hits):
+            engine = BrowserCrawlerEngine(
+                validator=validator,
+                extractors=extractors,
+                browser=browser,
+            )
+            snapshot = await engine.scrape(
+                ScrapePageRequest(
+                    url=f"http://allowed.test:{port}/subresource",
+                    crawl_mode="browser",
+                ),
+                CrawlContext(domain="allowed.test"),
+            )
+
+        assert snapshot.status_code == 200
+        assert b"/subresource" in hits
+        assert b"/private" not in hits
+        assert any("blocked.test" in url for url in validator.urls)
     finally:
         await browser.close()
         await proxy.close()
