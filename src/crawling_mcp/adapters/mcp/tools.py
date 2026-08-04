@@ -58,6 +58,20 @@ def _validation_payload(error: ValidationError) -> dict[str, Any]:
     return _error_payload(InvalidUrlError(reason="invalid_request", fields=fields))
 
 
+def transport_validation_payload(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Convert SDK argument-validation failures into the public error envelope."""
+    try:
+        if tool_name == "scrape_page":
+            ScrapePageRequest.model_validate(arguments)
+        elif tool_name == "crawl_site":
+            CrawlRequest.model_validate(arguments)
+        else:
+            return _error_payload(InvalidUrlError(reason="invalid_request"))
+    except ValidationError as error:
+        return _validation_payload(error)
+    return _error_payload(InvalidUrlError(reason="invalid_request"))
+
+
 def register_tools(server: FastMCP, application: McpApplication) -> None:
     """Register thin MCP tools that only validate, invoke and serialize."""
     logger = structlog.get_logger(__name__)
