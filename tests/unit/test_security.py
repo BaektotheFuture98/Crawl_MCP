@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 
 import pytest
@@ -14,6 +15,12 @@ class StaticResolver:
 
     async def resolve(self, hostname: str, port: int) -> Sequence[str]:
         return self.addresses
+
+
+class SlowResolver:
+    async def resolve(self, hostname: str, port: int) -> Sequence[str]:
+        await asyncio.sleep(1)
+        return ["93.184.216.34"]
 
 
 @pytest.mark.asyncio
@@ -74,3 +81,13 @@ async def test_security_rejects_url_credentials() -> None:
 
     with pytest.raises(InvalidUrlError):
         await validator.validate("https://user:password@example.com")
+
+
+@pytest.mark.asyncio
+async def test_security_bounds_dns_resolution_time() -> None:
+    validator = UrlSecurityValidator(resolver=SlowResolver(), resolver_timeout_seconds=0.01)
+
+    with pytest.raises(InvalidUrlError) as caught:
+        await validator.validate("https://example.com")
+
+    assert caught.value.details["reason"] == "dns_resolution_timeout"

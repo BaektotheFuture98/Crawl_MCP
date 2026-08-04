@@ -7,10 +7,13 @@ from crawling_mcp.adapters.extractors.registry import ExtractorRegistry
 from crawling_mcp.adapters.storage.memory_repository import InMemoryRepository
 from crawling_mcp.application.crawl_service import CrawlService
 from crawling_mcp.domain.enums import CrawlMode
+from crawling_mcp.domain.errors import CrawlLimitExceededError, NavigationError
 from crawling_mcp.domain.models import (
     CrawlContext,
+    CrawlLimits,
     CrawlRequest,
     CrawlResult,
+    PageItem,
     PageSnapshot,
     ScrapePageRequest,
     ValidatedUrl,
@@ -36,6 +39,25 @@ class FakeEngine:
 
     async def crawl(self, request: CrawlRequest, context: CrawlContext) -> CrawlResult:
         return CrawlResult(start_url=request.start_url)
+
+
+class FailingEngine(FakeEngine):
+    async def crawl(self, request: CrawlRequest, context: CrawlContext) -> CrawlResult:
+        raise NavigationError(url=request.start_url, reason="test_failure")
+
+
+class MultiItemEngine(FakeEngine):
+    async def crawl(self, request: CrawlRequest, context: CrawlContext) -> CrawlResult:
+        return CrawlResult(
+            job_id=context.job_id,
+            start_url=request.start_url,
+            visited_pages=1,
+            succeeded_pages=1,
+            items=[
+                PageItem(url=request.start_url, title="one"),
+                PageItem(url=request.start_url, title="two"),
+            ],
+        )
 
 
 class FakeFactory:
@@ -88,3 +110,58 @@ async def test_crawl_site_persists_engine_result() -> None:
     assert stored is not None
     assert stored.completed_at is not None
     assert validator.urls == ["https://example.com"]
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_persists_and_correlates_terminal_failure() -> None:
+    repository = InMemoryRepository()
+    service = CrawlService(
+        validator=RecordingValidator(),
+        factory=FakeFactory(FailingEngine()),
+        extractors=ExtractorRegistry(default=GenericExtractor()),
+        repository=repository,
+    )
+
+    with pytest.raises(NavigationError) as caught:
+        await service.crawl_site(CrawlRequest(start_url="https://example.com"))
+
+    assert caught.value.job_id is not None
+    stored = await repository.get_job(caught.value.job_id)
+    assert stored is not None
+    assert stored.completed_at is not None
+    assert stored.failed_pages == 1
+    assert stored.failures[0].details["reason"] == "test_failure"
+
+
+@pytest.mark.asyncio
+async def test_crawl_service_rejects_request_above_operational_limit() -> None:
+    validator = RecordingValidator()
+    service = CrawlService(
+        validator=validator,
+        factory=FakeFactory(FakeEngine()),
+        extractors=ExtractorRegistry(default=GenericExtractor()),
+        repository=InMemoryRepository(),
+        limits=CrawlLimits(max_pages=5),
+    )
+
+    with pytest.raises(CrawlLimitExceededError) as caught:
+        await service.crawl_site(CrawlRequest(start_url="https://example.com", max_pages=6))
+
+    assert caught.value.details == {"field": "max_pages", "requested": 6, "allowed": 5}
+    assert validator.urls == []
+
+
+@pytest.mark.asyncio
+async def test_crawl_service_counts_pages_independently_from_extracted_items() -> None:
+    service = CrawlService(
+        validator=RecordingValidator(),
+        factory=FakeFactory(MultiItemEngine()),
+        extractors=ExtractorRegistry(default=GenericExtractor()),
+        repository=InMemoryRepository(),
+    )
+
+    result = await service.crawl_site(CrawlRequest(start_url="https://example.com"))
+
+    assert len(result.items) == 2
+    assert result.visited_pages == 1
+    assert result.succeeded_pages == 1

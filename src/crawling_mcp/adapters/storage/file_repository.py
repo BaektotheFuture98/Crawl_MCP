@@ -46,6 +46,23 @@ class FileRepository(InMemoryRepository):
         await super().save_failure(job_id, failure)
         await self._persist(job_id)
 
+    async def set_counts(
+        self,
+        job_id: UUID,
+        *,
+        visited_pages: int,
+        succeeded_pages: int,
+        failed_pages: int,
+    ) -> None:
+        """Set and persist page-level outcome counts."""
+        await super().set_counts(
+            job_id,
+            visited_pages=visited_pages,
+            succeeded_pages=succeeded_pages,
+            failed_pages=failed_pages,
+        )
+        await self._persist(job_id)
+
     async def complete_job(self, job_id: UUID) -> None:
         """Complete and persist a job."""
         await super().complete_job(job_id)

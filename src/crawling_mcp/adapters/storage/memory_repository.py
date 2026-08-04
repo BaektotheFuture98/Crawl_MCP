@@ -34,6 +34,21 @@ class InMemoryRepository:
             job.failed_pages += 1
             job.visited_pages += 1
 
+    async def set_counts(
+        self,
+        job_id: UUID,
+        *,
+        visited_pages: int,
+        succeeded_pages: int,
+        failed_pages: int,
+    ) -> None:
+        """Set page outcome counts independently from extracted item cardinality."""
+        async with self._lock:
+            job = self._jobs[job_id]
+            job.visited_pages = visited_pages
+            job.succeeded_pages = succeeded_pages
+            job.failed_pages = failed_pages
+
     async def complete_job(self, job_id: UUID) -> None:
         """Mark a job completed."""
         async with self._lock:

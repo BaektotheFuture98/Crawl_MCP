@@ -37,10 +37,12 @@ class UrlSecurityValidator:
         resolver: HostResolver | None = None,
         domain_allowlist: Sequence[str] = (),
         allow_private_networks: bool = False,
+        resolver_timeout_seconds: float = 10.0,
     ) -> None:
         self._resolver = resolver or AsyncDnsResolver()
         self._allowlist = tuple(domain.lower().rstrip(".") for domain in domain_allowlist)
         self._allow_private = allow_private_networks
+        self._resolver_timeout = resolver_timeout_seconds
 
     async def validate(self, url: str) -> ValidatedUrl:
         """Return normalized URL data only when all security checks pass."""
@@ -60,7 +62,14 @@ class UrlSecurityValidator:
             raise BlockedUrlError(domain=hostname, reason="domain_not_allowlisted")
         port = parts.port or (443 if parts.scheme == "https" else 80)
         try:
-            addresses = tuple(await self._resolver.resolve(hostname, port))
+            addresses = tuple(
+                await asyncio.wait_for(
+                    self._resolver.resolve(hostname, port),
+                    timeout=self._resolver_timeout,
+                )
+            )
+        except TimeoutError as error:
+            raise InvalidUrlError(domain=hostname, reason="dns_resolution_timeout") from error
         except OSError as error:
             raise InvalidUrlError(domain=hostname, reason="dns_resolution_failed") from error
         if not addresses:

@@ -1,23 +1,28 @@
 from __future__ import annotations
 
 import asyncio
+from uuid import UUID, uuid4
 
 import structlog
 
 from crawling_mcp.domain.errors import (
     AuthenticationRequiredError,
     CrawlError,
+    CrawlLimitExceededError,
     ExtractionError,
     NavigationError,
 )
 from crawling_mcp.domain.models import (
     CrawlContext,
+    CrawlFailure,
+    CrawlLimits,
     CrawlRequest,
     CrawlResult,
     PageItem,
     PageSnapshot,
     ScrapePageRequest,
 )
+from crawling_mcp.infrastructure.logging import mask_sensitive
 from crawling_mcp.ports.authentication import AuthContextProvider
 from crawling_mcp.ports.crawler import CrawlerEngine, CrawlerEngineFactory, UrlValidator
 from crawling_mcp.ports.extractor import ExtractorResolver
@@ -35,13 +40,73 @@ class CrawlService:
         extractors: ExtractorResolver,
         repository: CrawlRepository,
         auth: AuthContextProvider | None = None,
+        limits: CrawlLimits | None = None,
     ) -> None:
         self._validator = validator
         self._factory = factory
         self._extractors = extractors
         self._repository = repository
         self._auth = auth
+        self._limits = limits or CrawlLimits()
         self._log = structlog.get_logger(__name__)
+
+    def _enforce_scrape_limits(self, request: ScrapePageRequest) -> None:
+        if request.request_timeout_seconds > self._limits.request_timeout_seconds:
+            raise CrawlLimitExceededError(
+                field="request_timeout_seconds",
+                requested=request.request_timeout_seconds,
+                allowed=self._limits.request_timeout_seconds,
+            )
+
+    def _enforce_crawl_limits(self, request: CrawlRequest) -> None:
+        checks = {
+            "max_pages": (request.max_pages, self._limits.max_pages),
+            "max_depth": (request.max_depth, self._limits.max_depth),
+            "max_request_retries": (
+                request.max_request_retries,
+                self._limits.max_request_retries,
+            ),
+            "request_timeout_seconds": (
+                request.request_timeout_seconds,
+                self._limits.request_timeout_seconds,
+            ),
+            "job_timeout_seconds": (
+                request.job_timeout_seconds,
+                self._limits.job_timeout_seconds,
+            ),
+            "max_concurrency": (request.max_concurrency, self._limits.max_concurrency),
+        }
+        for field, (requested, allowed) in checks.items():
+            if requested > allowed:
+                raise CrawlLimitExceededError(
+                    field=field,
+                    requested=requested,
+                    allowed=allowed,
+                )
+
+    async def _persist_terminal_failure(self, *, job_id: UUID, url: str, error: CrawlError) -> None:
+        """Best-effort persistence of one terminal job failure."""
+        failure = CrawlFailure(
+            url=url,
+            error_code=error.code,
+            message=error.message,
+            details=mask_sensitive(error.details),
+        )
+        try:
+            await self._repository.save_failure(job_id, failure)
+            await self._repository.set_counts(
+                job_id,
+                visited_pages=1,
+                succeeded_pages=0,
+                failed_pages=1,
+            )
+            await self._repository.complete_job(job_id)
+        except Exception as persistence_error:
+            self._log.error(
+                "terminal_failure_persistence_failed",
+                job_id=str(job_id),
+                error_type=type(persistence_error).__name__,
+            )
 
     async def _scrape_with_context(
         self,
@@ -77,13 +142,16 @@ class CrawlService:
             context.browser_context = browser_context
             return await engine.crawl(request, context)
 
-    async def scrape_page(self, request: ScrapePageRequest) -> PageItem:
-        """Validate, fetch and extract one page."""
+    async def _run_scrape_page(self, request: ScrapePageRequest, job_id: UUID) -> PageItem:
         validated = await self._validator.validate(request.url)
         authenticated = request.auth_profile is not None
         extractor = self._extractors.get(validated.hostname, authenticated=authenticated)
         engine = self._factory.get(request.crawl_mode, authenticated=authenticated)
-        context = CrawlContext(domain=validated.hostname, adapter_name=extractor.name)
+        context = CrawlContext(
+            job_id=job_id,
+            domain=validated.hostname,
+            adapter_name=extractor.name,
+        )
         log_context = {
             "job_id": str(context.job_id),
             "url": validated.url,
@@ -97,26 +165,78 @@ class CrawlService:
                 self._scrape_with_context(safe_request, context, engine),
                 timeout=request.request_timeout_seconds,
             )
+            await self._validator.validate(snapshot.url)
+            try:
+                items = await extractor.extract(snapshot)
+            except CrawlError:
+                raise
+            except Exception as error:
+                raise ExtractionError(url=snapshot.url, reason=type(error).__name__) from error
+            if not items:
+                raise ExtractionError(url=snapshot.url, reason="no_items")
         except TimeoutError as error:
             self._log.warning("scrape_failed", error_code="NAVIGATION_ERROR", **log_context)
-            raise NavigationError(url=validated.url, reason="request_timeout") from error
+            domain_error = NavigationError(
+                url=validated.url,
+                reason="request_timeout",
+                job_id=context.job_id,
+            )
+            raise domain_error from error
         except CrawlError as error:
+            error.attach_job_id(context.job_id)
             self._log.warning("scrape_failed", error_code=error.code, **log_context)
             raise
-        await self._validator.validate(snapshot.url)
-        items = await extractor.extract(snapshot)
-        if not items:
-            raise ExtractionError(url=snapshot.url, reason="no_items")
+        for item in items:
+            await self._repository.save_page(context.job_id, item)
+        await self._repository.set_counts(
+            context.job_id,
+            visited_pages=1,
+            succeeded_pages=1,
+            failed_pages=0,
+        )
+        await self._repository.complete_job(context.job_id)
         self._log.info("scrape_completed", final_url=snapshot.url, **log_context)
         return items[0]
 
-    async def crawl_site(self, request: CrawlRequest) -> CrawlResult:
-        """Run a bounded crawl and persist its aggregate result."""
+    async def scrape_page(self, request: ScrapePageRequest) -> PageItem:
+        """Run a single-page job under one end-to-end deadline."""
+        self._enforce_scrape_limits(request)
+        job_id = uuid4()
+        try:
+            async with asyncio.timeout(request.request_timeout_seconds):
+                await self._repository.start_job(CrawlResult(job_id=job_id, start_url=request.url))
+                return await self._run_scrape_page(request, job_id)
+        except TimeoutError as error:
+            domain_error = NavigationError(
+                url=request.url,
+                reason="request_timeout",
+                job_id=job_id,
+            )
+            await self._persist_terminal_failure(job_id=job_id, url=request.url, error=domain_error)
+            raise domain_error from error
+        except CrawlError as error:
+            error.attach_job_id(job_id)
+            await self._persist_terminal_failure(job_id=job_id, url=request.url, error=error)
+            raise
+        except Exception as error:
+            domain_error = NavigationError(
+                url=request.url,
+                reason="internal_error",
+                job_id=job_id,
+            )
+            await self._persist_terminal_failure(job_id=job_id, url=request.url, error=domain_error)
+            raise domain_error from error
+
+    async def _run_crawl_site(self, request: CrawlRequest, job_id: UUID) -> CrawlResult:
         validated = await self._validator.validate(request.start_url)
         authenticated = request.auth_profile is not None
         extractor = self._extractors.get(validated.hostname, authenticated=authenticated)
         engine = self._factory.get(request.crawl_mode, authenticated=authenticated)
-        context = CrawlContext(domain=validated.hostname, adapter_name=extractor.name)
+        context = CrawlContext(
+            job_id=job_id,
+            domain=validated.hostname,
+            adapter_name=extractor.name,
+        )
         log_context = {
             "job_id": str(context.job_id),
             "url": validated.url,
@@ -124,8 +244,6 @@ class CrawlService:
             "adapter_name": extractor.name,
         }
         self._log.info("crawl_started", **log_context)
-        initial = CrawlResult(job_id=context.job_id, start_url=validated.url)
-        await self._repository.start_job(initial)
         safe_request = request.model_copy(update={"start_url": validated.url})
         try:
             result = await asyncio.wait_for(
@@ -134,14 +252,26 @@ class CrawlService:
             )
         except TimeoutError as error:
             self._log.warning("crawl_failed", error_code="NAVIGATION_ERROR", **log_context)
-            raise NavigationError(url=validated.url, reason="job_timeout") from error
+            domain_error = NavigationError(
+                url=validated.url,
+                reason="job_timeout",
+                job_id=context.job_id,
+            )
+            raise domain_error from error
         except CrawlError as error:
+            error.attach_job_id(context.job_id)
             self._log.warning("crawl_failed", error_code=error.code, **log_context)
             raise
         for item in result.items:
             await self._repository.save_page(context.job_id, item)
         for failure in result.failures:
             await self._repository.save_failure(context.job_id, failure)
+        await self._repository.set_counts(
+            context.job_id,
+            visited_pages=result.visited_pages,
+            succeeded_pages=result.succeeded_pages,
+            failed_pages=result.failed_pages,
+        )
         await self._repository.complete_job(context.job_id)
         stored = await self._repository.get_job(context.job_id)
         if stored is None:
@@ -154,6 +284,41 @@ class CrawlService:
             **log_context,
         )
         return stored
+
+    async def crawl_site(self, request: CrawlRequest) -> CrawlResult:
+        """Run a bounded crawl job under one end-to-end deadline."""
+        self._enforce_crawl_limits(request)
+        job_id = uuid4()
+        try:
+            async with asyncio.timeout(request.job_timeout_seconds):
+                await self._repository.start_job(
+                    CrawlResult(job_id=job_id, start_url=request.start_url)
+                )
+                return await self._run_crawl_site(request, job_id)
+        except TimeoutError as error:
+            domain_error = NavigationError(
+                url=request.start_url,
+                reason="job_timeout",
+                job_id=job_id,
+            )
+            await self._persist_terminal_failure(
+                job_id=job_id, url=request.start_url, error=domain_error
+            )
+            raise domain_error from error
+        except CrawlError as error:
+            error.attach_job_id(job_id)
+            await self._persist_terminal_failure(job_id=job_id, url=request.start_url, error=error)
+            raise
+        except Exception as error:
+            domain_error = NavigationError(
+                url=request.start_url,
+                reason="internal_error",
+                job_id=job_id,
+            )
+            await self._persist_terminal_failure(
+                job_id=job_id, url=request.start_url, error=domain_error
+            )
+            raise domain_error from error
 
     async def close(self) -> None:
         """Close application-owned persistence resources."""

@@ -47,6 +47,17 @@ class CrawlRequest(BaseModel):
     remove_tracking_parameters: bool = True
 
 
+class CrawlLimits(BaseModel):
+    """Operator-controlled ceilings applied before any network activity."""
+
+    max_pages: int = Field(default=500, ge=1, le=500)
+    max_depth: int = Field(default=10, ge=0, le=10)
+    max_request_retries: int = Field(default=5, ge=0, le=5)
+    request_timeout_seconds: int = Field(default=120, ge=1, le=120)
+    job_timeout_seconds: int = Field(default=3600, ge=1, le=3600)
+    max_concurrency: int = Field(default=20, ge=1, le=20)
+
+
 class PageSnapshot(BaseModel):
     """Engine-neutral representation of a fetched page."""
 

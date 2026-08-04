@@ -15,6 +15,15 @@ class CrawlRepository(Protocol):
 
     async def save_failure(self, job_id: UUID, failure: CrawlFailure) -> None: ...
 
+    async def set_counts(
+        self,
+        job_id: UUID,
+        *,
+        visited_pages: int,
+        succeeded_pages: int,
+        failed_pages: int,
+    ) -> None: ...
+
     async def complete_job(self, job_id: UUID) -> None: ...
 
     async def get_job(self, job_id: UUID) -> CrawlResult | None: ...

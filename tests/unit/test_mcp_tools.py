@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from mcp.server.fastmcp import FastMCP
@@ -14,7 +15,12 @@ from crawling_mcp.domain.models import PageItem, SupportedSite
 class FakeContainer:
     async def scrape_page(self, request: Any) -> PageItem:
         if "blocked" in request.url:
-            raise BlockedUrlError(domain="blocked.example", address="127.0.0.1", password="secret")
+            raise BlockedUrlError(
+                job_id=uuid4(),
+                domain="blocked.example",
+                address="127.0.0.1",
+                password="secret",
+            )
         return PageItem(url=request.url, title="Title", content="Body")
 
     async def crawl_site(self, request: Any) -> Any:
@@ -63,6 +69,7 @@ async def test_mcp_tool_maps_domain_error_without_traceback() -> None:
     )
 
     assert result["error_code"] == ErrorCode.BLOCKED_URL
+    assert result["job_id"] is not None
     assert "traceback" not in str(result).lower()
     assert result["details"] == {
         "domain": "blocked.example",
@@ -83,3 +90,25 @@ async def test_mcp_tool_lists_supported_sites_and_validates_session() -> None:
         "sites": [{"domain": "example.com", "authentication": "form_login", "extractor": "example"}]
     }
     assert session == {"auth_profile": "valid", "valid": True}
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_maps_enum_and_limit_validation_to_structured_errors() -> None:
+    server = FastMCP("test")
+    register_tools(server, FakeContainer())
+
+    invalid_mode = structured(
+        await server.call_tool(
+            "scrape_page",
+            {"url": "https://example.com", "crawl_mode": "not-a-mode"},
+        )
+    )
+    over_limit = structured(
+        await server.call_tool(
+            "crawl_site",
+            {"start_url": "https://example.com", "max_pages": 501},
+        )
+    )
+
+    assert invalid_mode["error_code"] == ErrorCode.INVALID_URL
+    assert over_limit["error_code"] == ErrorCode.CRAWL_LIMIT_EXCEEDED

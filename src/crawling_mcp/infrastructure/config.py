@@ -20,4 +20,11 @@ class Settings(BaseSettings):
     domain_allowlist: list[str] = Field(default_factory=list)
     browser_headless: bool = True
     browser_max_contexts: int = Field(default=3, ge=1, le=20)
+    max_pages_limit: int = Field(default=500, ge=1, le=500)
+    max_depth_limit: int = Field(default=10, ge=0, le=10)
+    max_request_retries_limit: int = Field(default=5, ge=0, le=5)
+    request_timeout_limit_seconds: int = Field(default=120, ge=1, le=120)
+    job_timeout_limit_seconds: int = Field(default=3600, ge=1, le=3600)
+    max_concurrency_limit: int = Field(default=20, ge=1, le=20)
+    dns_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
     test_site_base_url: str = "http://127.0.0.1:8765"
