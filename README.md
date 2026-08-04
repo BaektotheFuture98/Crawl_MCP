@@ -11,9 +11,9 @@ FastMCP Adapter
     ↓ 입력 검증, Application Service 호출, 응답 직렬화
 CrawlService ── AuthService
     ↓ Protocol ports
-CrawlerEngine / AuthenticationAdapter / PageExtractor / CrawlRepository
+CrawlerEngine / AuthenticationAdapter / PageExtractor / CrawlRepository / Network ports
     ↑
-Crawlee HTTP / shared Playwright browser / registries / file or memory storage
+Crawlee HTTP / shared Playwright browser / validated egress proxy / registries / storage
 ```
 
 MCP Tool은 Playwright와 Crawlee를 직접 사용하지 않습니다. `CrawlService`는 Protocol에만 의존하므로 같은 로직을 CLI, REST API 또는 Worker Adapter에서 재사용할 수 있습니다. 서버 lifespan이 Playwright와 Chromium을 한 번 시작하고, 작업별 BrowserContext로 세션을 격리합니다.
@@ -24,14 +24,14 @@ MCP Tool은 Playwright와 Crawlee를 직접 사용하지 않습니다. `CrawlSer
 src/crawling_mcp/
 ├── domain/           # 모델, enum, 오류, URL·링크 정책
 ├── application/      # CrawlService, AuthService
-├── ports/            # crawler/auth/extractor/repository/browser Protocol
+├── ports/            # crawler/auth/extractor/repository/browser/network/robots Protocol
 ├── adapters/
 │   ├── mcp/          # 네 MCP Tool
 │   ├── crawlee/      # HTTP/browser/adaptive engine, factory, router
 │   ├── auth/         # registry, no-auth, saved session, example login
 │   ├── extractors/   # generic/example extractor와 registry
 │   └── storage/      # memory/file repository
-├── infrastructure/   # 설정, SSRF, logging, browser, artifacts
+├── infrastructure/   # 설정, SSRF, egress proxy, robots, logging, browser, artifacts
 ├── bootstrap.py      # dependency composition root
 ├── server.py         # FastMCP lifespan
 └── test_site.py      # 개발 전용 로그인 사이트
@@ -229,6 +229,7 @@ data/failures/{job_id}/
 - loopback, private, link-local, unspecified, multicast, reserved 및 metadata IP를 기본 차단합니다.
 - DNS 응답 중 하나라도 차단 주소면 전체 요청을 거부합니다.
 - 최초 URL, 발견 링크, navigation 직전과 redirect 최종 URL을 다시 검증합니다.
+- HTTP와 Chromium 트래픽은 loopback egress proxy를 통과하며, proxy가 검증된 정확한 IP로 연결합니다. redirect와 iframe·이미지·스크립트 같은 하위 리소스도 같은 정책을 적용받습니다.
 - 선택적 domain allowlist는 private-IP 차단을 우회하지 않습니다.
 - password, cookie, Authorization, token, storage state는 로그에서 마스킹됩니다.
 - robots.txt 준수는 기본 활성화지만 사이트 이용약관과 법적 권한 검토를 대신하지 않습니다.
@@ -238,6 +239,6 @@ data/failures/{job_id}/
 - CAPTCHA, MFA, SSO, device approval을 우회하지 않습니다.
 - 임의 사이트 로그인 form을 자동 추측하지 않습니다.
 - Adaptive HTTP→browser 전환은 본문 길이·JS shell·login redirect 휴리스틱입니다.
-- Browser traversal은 안전한 보수적 순차 실행이며 `max_concurrency`는 상한으로 적용됩니다.
+- Browser traversal은 작업별 context 안에서 bounded worker queue를 사용하며 `max_concurrency`, 사이트별 요청 간격, robots.txt를 함께 적용합니다.
 - FileRepository는 단일 호스트용입니다. 다중 replica는 같은 Repository Protocol의 PostgreSQL 구현과 분산 queue가 필요합니다.
 - 운영 사설망 crawling은 기본 제공하지 않습니다. `allow_private_networks`는 로컬 통합 테스트 또는 격리된 테스트 Compose에서만 사용하십시오.
