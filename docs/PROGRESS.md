@@ -106,12 +106,13 @@ SSRF, egress byte/deadline/handler cleanup을 포함한다.
 
 ## 남은 절차
 
-기능 구현과 로컬·Docker 검증은 완료 상태다. `main` 통합 전 절차만 남아 있다.
+두 번째 독립 코드 리뷰에서 기존 4개 Important와 1개 Moderate가 모두 해결됐고,
+새 merge blocker가 없다는 판정을 받았다. 기능 구현과 로컬·Docker 검증은 완료 상태다.
+`main` 통합 방식 결정만 남아 있다.
 
-1. 현재 HEAD에 대한 두 번째 독립 코드 리뷰 결과를 확인한다.
-2. merge blocker가 있으면 테스트 우선으로 수정하고 위 전체 검증을 다시 실행한다.
-3. blocker가 없으면 `feature/crawling-mcp`를 `main`에 통합한다.
-4. `origin/main`과 feature branch를 push하고 최종 상태를 이 문서에 기록한다.
+1. 로컬 `main` 병합, Pull Request 생성, feature branch 유지 중 하나를 선택한다.
+2. 병합을 선택하면 병합된 `main`에서 전체 테스트를 다시 실행한다.
+3. 성공한 `main`을 `origin/main`에 push하고 최종 상태를 기록한다.
 
 ## 참고 문서
 
