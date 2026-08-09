@@ -5,6 +5,7 @@ from datetime import timedelta
 from typing import Any, cast
 from urllib.parse import urljoin
 
+import structlog
 from bs4 import BeautifulSoup
 from crawlee import ConcurrencySettings, Request
 from crawlee._types import BasicCrawlingContext
@@ -15,7 +16,7 @@ from crawlee.proxy_configuration import ProxyConfiguration
 from crawlee.storages import RequestQueue
 
 from crawling_mcp.adapters.crawlee.router import PageRouter
-from crawling_mcp.domain.enums import ErrorCode, PageType
+from crawling_mcp.domain.enums import PageType
 from crawling_mcp.domain.errors import CrawlError, NavigationError
 from crawling_mcp.domain.models import (
     CrawlContext,
@@ -26,6 +27,8 @@ from crawling_mcp.domain.models import (
     ScrapePageRequest,
 )
 from crawling_mcp.domain.policies import LinkPolicy, normalize_url
+from crawling_mcp.infrastructure.logging import mask_sensitive
+from crawling_mcp.ports.artifacts import FailureArtifactPort
 from crawling_mcp.ports.crawler import UrlValidator
 from crawling_mcp.ports.extractor import ExtractorResolver
 from crawling_mcp.ports.network import EgressProxyPort
@@ -61,6 +64,7 @@ class HttpCrawlerEngine:
         max_content_bytes: int = 10_000_000,
         max_links_per_page: int = 1000,
         robots: RobotsPolicy | None = None,
+        artifacts: FailureArtifactPort | None = None,
     ) -> None:
         if max_content_bytes < 1:
             raise ValueError("max_content_bytes must be positive")
@@ -73,6 +77,22 @@ class HttpCrawlerEngine:
         self._max_content_bytes = max_content_bytes
         self._max_links_per_page = max_links_per_page
         self._robots = robots
+        self._artifacts = artifacts
+        self._log = structlog.get_logger(__name__)
+
+    async def _capture_artifacts(self, context: CrawlContext, error: CrawlError) -> dict[str, str]:
+        if self._artifacts is None:
+            return {}
+        try:
+            paths = await self._artifacts.capture(context.job_id, error, page=None)
+        except Exception as artifact_error:
+            self._log.error(
+                "crawl_artifact_capture_failed",
+                job_id=str(context.job_id),
+                error_type=type(artifact_error).__name__,
+            )
+            return {}
+        return {key: value for key, value in paths.model_dump().items() if value is not None}
 
     def _proxy_configuration(self) -> ProxyConfiguration | None:
         if self._egress_proxy is None:
@@ -181,7 +201,10 @@ class HttpCrawlerEngine:
             snapshot = self._snapshot(crawling_context, depth=depth)
             await self._validator.validate(snapshot.url)
             snapshot.page_type = self._router.classify(snapshot, domain=context.domain)
-            result.items.extend(await extractor.extract(snapshot))
+            items = await extractor.extract(snapshot)
+            if context.page_handler is not None:
+                await context.page_handler(snapshot, items)
+            result.items.extend(items)
             result.visited_pages += 1
             result.succeeded_pages += 1
             if request.request_delay_seconds:
@@ -240,12 +263,22 @@ class HttpCrawlerEngine:
             crawling_context: BeautifulSoupCrawlingContext | BasicCrawlingContext,
             error: Exception,
         ) -> None:
+            domain_error = (
+                error
+                if isinstance(error, CrawlError)
+                else NavigationError(
+                    url=crawling_context.request.url,
+                    reason=type(error).__name__,
+                )
+            )
+            artifact_values = await self._capture_artifacts(context, domain_error)
             result.failures.append(
                 CrawlFailure(
                     url=crawling_context.request.url,
-                    error_code=ErrorCode.NAVIGATION_ERROR,
-                    message="페이지에 접속하지 못했습니다.",
-                    details={"error_type": type(error).__name__},
+                    error_code=domain_error.code,
+                    message=domain_error.message,
+                    details=mask_sensitive(domain_error.details),
+                    artifacts=artifact_values,
                 )
             )
             result.visited_pages += 1

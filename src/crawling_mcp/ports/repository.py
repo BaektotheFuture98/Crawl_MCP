@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Protocol
 from uuid import UUID
 
-from crawling_mcp.domain.models import CrawlFailure, CrawlResult, PageItem
+from crawling_mcp.domain.models import CrawlFailure, CrawlResult, PageItem, PageSnapshot
 
 
 class CrawlRepository(Protocol):
@@ -11,9 +11,13 @@ class CrawlRepository(Protocol):
 
     async def start_job(self, result: CrawlResult) -> None: ...
 
-    async def save_page(self, job_id: UUID, item: PageItem) -> None: ...
+    async def save_page(
+        self, job_id: UUID, items: list[PageItem], snapshot: PageSnapshot
+    ) -> None: ...
 
-    async def save_failure(self, job_id: UUID, failure: CrawlFailure) -> None: ...
+    async def save_failure(
+        self, job_id: UUID, failure: CrawlFailure, *, count_page: bool = True
+    ) -> None: ...
 
     async def set_counts(
         self,

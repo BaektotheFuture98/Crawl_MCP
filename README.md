@@ -114,7 +114,7 @@ Codex, Claude Desktop 등 STDIO MCP Client에서는 절대 경로를 사용합�
 }
 ```
 
-성공 결과에는 `url`, `title`, `content`, `metadata`, `meta_description`, `canonical_url`, `language`, `http_status_code`, `published_at`, `source`, `collected_at`이 포함됩니다.
+성공 결과에는 `url`, `title`, `content`, `metadata`, `meta_description`, `canonical_url`, `language`, `http_status_code`, `published_at`, `reporter`, `publisher`, `collected_at`이 포함됩니다.
 
 ### `crawl_site`
 
@@ -234,12 +234,16 @@ jobs/{job_id}/failures/{failure_id}/
 
 ## PostgreSQL 기사 적재
 
-`repository=postgres`에서 수집 실행은 `crawl_jobs`에, 추출된 기사는 `articles`에 append-only로
-저장됩니다. `articles`의 핵심 열은 `collected_at`(수집 시간), `published_at`(기사 작성 시간),
-`title`, `content`, `source`, `url`입니다. 같은 URL을 재수집해도 행을 갱신하지 않습니다.
+`repository=postgres`에서 추출된 기사는 기존 공개 `ARTICLE` 계약에 append-only로 저장됩니다.
+열은 `id`, `ar_title`, `ar_content`, `reporter`, `publisher`, `url`, `published_at`이며 UUID는
+데이터베이스 기본값(`uuidv7()` 지원 환경)으로 생성합니다. 같은 URL을 재수집해도 행을 갱신하지
+않습니다.
 
-작성 시간과 출처는 JSON-LD, Open Graph, 표준 article metadata를 차례로 해석하며 찾을 수 없으면
-`NULL`로 저장합니다. PostgreSQL에는 원본 HTML의 MinIO key·URI·SHA-256·크기를 함께 기록합니다.
+수집 실행과 수집 시간은 `crawl_jobs` 및 `crawl_article_objects`에 저장합니다. 후자는 `ARTICLE.id`와
+1:1로 연결되며 원본 HTML의 MinIO key·URI·SHA-256·크기, canonical URL, 설명과 추출 metadata를
+보관합니다. 작성 시간·기자·언론사는 JSON-LD, Open Graph, 표준 article metadata를 해석하며
+찾을 수 없으면 `NULL`로 저장합니다. 같은 URL에서 내용이 바뀌면 콘텐츠 해시가 다른 MinIO 객체로
+남습니다.
 스키마는 `alembic upgrade head`로 적용되며 Compose의 `migrate` 서비스가 MCP 서버보다 먼저 이를 수행합니다.
 
 운영에서는 `CRAWLING_MCP_POSTGRES_DSN`, `CRAWLING_MCP_MINIO_ENDPOINT`,

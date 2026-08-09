@@ -50,7 +50,7 @@ async def test_generic_extractor_extracts_article_metadata_from_json_ld() -> Non
         <meta property="og:site_name" content="대체 출처">
         <script type="application/ld+json">
         {"@type":"NewsArticle","datePublished":"2026-08-10T09:30:00+09:00",
-         "publisher":{"name":"동아일보"}}
+         "publisher":{"name":"동아일보"}, "author":{"name":"홍길동 기자"}}
         </script>
         </head><body><article><p>기사 본문입니다.</p></article></body></html>
         """,
@@ -59,10 +59,10 @@ async def test_generic_extractor_extracts_article_metadata_from_json_ld() -> Non
     item = (await GenericExtractor().extract(snapshot))[0]
 
     assert item.published_at == datetime(2026, 8, 10, 0, 30, tzinfo=UTC)
-    assert item.source == "동아일보"
+    assert item.publisher == "동아일보"
+    assert item.reporter == "홍길동 기자"
     assert item.content == "기사 본문입니다."
-    assert item.raw_html == snapshot.html
-    assert "raw_html" not in item.model_dump()
+    assert "raw_html" not in type(item).model_fields
 
 
 @pytest.mark.asyncio
@@ -75,7 +75,8 @@ async def test_generic_extractor_leaves_article_metadata_null_when_missing() -> 
     item = (await GenericExtractor().extract(snapshot))[0]
 
     assert item.published_at is None
-    assert item.source is None
+    assert item.publisher is None
+    assert item.reporter is None
 
 
 def test_extractor_registry_uses_exact_registration_and_public_fallback() -> None:

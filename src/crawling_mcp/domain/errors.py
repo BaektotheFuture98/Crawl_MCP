@@ -24,6 +24,7 @@ class CrawlError(Exception):
         self.message = message or self.default_message
         self.job_id = job_id
         self.details = details
+        self.artifacts: dict[str, str] = {}
 
     def attach_job_id(self, job_id: UUID) -> Self:
         """Correlate an existing domain error with its crawl job."""

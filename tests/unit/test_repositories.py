@@ -9,7 +9,7 @@ import pytest
 from crawling_mcp.adapters.storage.file_repository import FileRepository
 from crawling_mcp.adapters.storage.memory_repository import InMemoryRepository
 from crawling_mcp.domain.enums import ErrorCode
-from crawling_mcp.domain.models import CrawlFailure, CrawlResult, PageItem
+from crawling_mcp.domain.models import CrawlFailure, CrawlResult, PageItem, PageSnapshot
 
 
 @pytest.mark.asyncio
@@ -27,7 +27,11 @@ async def test_repository_persists_job_pages_failures_and_completion(
     )
 
     await repository.start_job(job)
-    await repository.save_page(job.job_id, item)
+    await repository.save_page(
+        job.job_id,
+        [item],
+        PageSnapshot(url=item.url, html="<html>body</html>"),
+    )
     await repository.save_failure(job.job_id, failure)
     await repository.complete_job(job.job_id)
     stored = await repository.get_job(job.job_id)
@@ -47,7 +51,12 @@ async def test_file_repository_writes_atomic_valid_json(tmp_path: Path) -> None:
     job = CrawlResult(start_url="https://example.com")
 
     await repository.start_job(job)
-    await repository.save_page(job.job_id, PageItem(url="https://example.com"))
+    item = PageItem(url="https://example.com")
+    await repository.save_page(
+        job.job_id,
+        [item],
+        PageSnapshot(url=item.url, html="<html></html>"),
+    )
 
     result_file = tmp_path / "results" / f"{job.job_id}.json"
     assert result_file.is_file()

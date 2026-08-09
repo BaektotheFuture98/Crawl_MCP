@@ -54,17 +54,33 @@ class FailingEngine(FakeEngine):
         raise NavigationError(url=request.start_url, reason="test_failure")
 
 
+class PersistThenFailEngine(FakeEngine):
+    async def crawl(self, request: CrawlRequest, context: CrawlContext) -> CrawlResult:
+        item = PageItem(url=request.start_url, title="committed")
+        snapshot = PageSnapshot(url=request.start_url, html="<html>committed</html>")
+        assert context.page_handler is not None
+        await context.page_handler(snapshot, [item])
+        raise NavigationError(url=request.start_url, reason="timeout_after_commit")
+
+
 class MultiItemEngine(FakeEngine):
     async def crawl(self, request: CrawlRequest, context: CrawlContext) -> CrawlResult:
+        items = [
+            PageItem(url=request.start_url, title="one"),
+            PageItem(url=request.start_url, title="two"),
+        ]
+        snapshot = PageSnapshot(
+            url=request.start_url,
+            html="<html><main>one two</main></html>",
+        )
+        assert context.page_handler is not None
+        await context.page_handler(snapshot, items)
         return CrawlResult(
             job_id=context.job_id,
             start_url=request.start_url,
             visited_pages=1,
             succeeded_pages=1,
-            items=[
-                PageItem(url=request.start_url, title="one"),
-                PageItem(url=request.start_url, title="two"),
-            ],
+            items=items,
         )
 
 
@@ -139,6 +155,29 @@ async def test_crawl_site_persists_and_correlates_terminal_failure() -> None:
     assert stored.completed_at is not None
     assert stored.failed_pages == 1
     assert stored.failures[0].details["reason"] == "test_failure"
+
+
+@pytest.mark.asyncio
+async def test_terminal_failure_does_not_recount_an_already_committed_page() -> None:
+    repository = InMemoryRepository()
+    service = CrawlService(
+        validator=RecordingValidator(),
+        factory=FakeFactory(PersistThenFailEngine()),
+        extractors=ExtractorRegistry(default=GenericExtractor()),
+        repository=repository,
+    )
+
+    with pytest.raises(NavigationError) as caught:
+        await service.crawl_site(CrawlRequest(start_url="https://example.com"))
+
+    assert caught.value.job_id is not None
+    stored = await repository.get_job(caught.value.job_id)
+    assert stored is not None
+    assert stored.visited_pages == 1
+    assert stored.succeeded_pages == 1
+    assert stored.failed_pages == 0
+    assert [item.title for item in stored.items] == ["committed"]
+    assert len(stored.failures) == 1
 
 
 @pytest.mark.asyncio

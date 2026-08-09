@@ -73,8 +73,7 @@ class FailureArtifactWriter:
         sensitive_values: tuple[str, ...] = (),
     ) -> ArtifactPaths:
         """Best-effort capture of JSON, HTML, PNG and accessibility diagnostics."""
-        intended_folder = self._root / str(job_id)
-        paths = ArtifactPaths(error_json=str(intended_folder / "error.json"))
+        paths = ArtifactPaths()
         safe_error = mask_sensitive(error.to_response(job_id).model_dump(mode="json"))
         try:
             folder = await asyncio.to_thread(_reserve_failure_folder, self._root, job_id)
@@ -153,7 +152,6 @@ class MinioFailureArtifactWriter:
     ) -> ArtifactPaths:
         """Capture safe object references for error JSON and optional page diagnostics."""
         artifact_id = uuid4()
-        fallback = f"minio://jobs/{job_id}/failures/{artifact_id}/error.json"
         safe_error = mask_sensitive(error.to_response(job_id).model_dump(mode="json"))
         error_object = await self._put(
             job_id,
@@ -162,7 +160,7 @@ class MinioFailureArtifactWriter:
             json.dumps(safe_error, ensure_ascii=False, indent=2).encode("utf-8"),
             "application/json",
         )
-        paths = ArtifactPaths(error_json=error_object.uri if error_object is not None else fallback)
+        paths = ArtifactPaths(error_json=error_object.uri if error_object is not None else None)
         if page is None:
             return paths
 

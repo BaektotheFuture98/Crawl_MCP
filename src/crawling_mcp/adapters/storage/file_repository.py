@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import UUID
 
 from crawling_mcp.adapters.storage.memory_repository import InMemoryRepository
-from crawling_mcp.domain.models import CrawlFailure, CrawlResult, PageItem
+from crawling_mcp.domain.models import CrawlFailure, CrawlResult, PageItem, PageSnapshot
 
 
 class FileRepository(InMemoryRepository):
@@ -36,14 +36,16 @@ class FileRepository(InMemoryRepository):
         await super().start_job(result)
         await self._persist(result.job_id)
 
-    async def save_page(self, job_id: UUID, item: PageItem) -> None:
+    async def save_page(self, job_id: UUID, items: list[PageItem], snapshot: PageSnapshot) -> None:
         """Append and persist a successful page."""
-        await super().save_page(job_id, item)
+        await super().save_page(job_id, items, snapshot)
         await self._persist(job_id)
 
-    async def save_failure(self, job_id: UUID, failure: CrawlFailure) -> None:
+    async def save_failure(
+        self, job_id: UUID, failure: CrawlFailure, *, count_page: bool = True
+    ) -> None:
         """Append and persist a failed page."""
-        await super().save_failure(job_id, failure)
+        await super().save_failure(job_id, failure, count_page=count_page)
         await self._persist(job_id)
 
     async def set_counts(

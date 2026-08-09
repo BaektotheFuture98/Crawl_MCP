@@ -59,8 +59,20 @@ def _meta_content(soup: BeautifulSoup, attribute: str, value: str) -> str | None
     return None
 
 
-def _article_metadata(soup: BeautifulSoup) -> tuple[datetime | None, str | None]:
-    """Read publication date and publisher from standard article metadata."""
+def _named_entity(value: Any) -> str | None:
+    """Return a readable name from a JSON-LD Person/Organization value."""
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, dict) and isinstance(value.get("name"), str):
+        return value["name"].strip() or None
+    if isinstance(value, list):
+        names = [name for item in value if (name := _named_entity(item)) is not None]
+        return ", ".join(names) or None
+    return None
+
+
+def _article_metadata(soup: BeautifulSoup) -> tuple[datetime | None, str | None, str | None]:
+    """Read publication date, reporter and publisher from article metadata."""
     nodes = _article_json_ld(soup)
     published = next(
         (
@@ -77,16 +89,23 @@ def _article_metadata(soup: BeautifulSoup) -> tuple[datetime | None, str | None]
         if isinstance(time_tag, Tag):
             published = _parse_published_at(str(time_tag.get("datetime", "")))
 
-    source: str | None = None
+    publisher: str | None = None
     for node in nodes:
-        publisher = node.get("publisher")
-        if isinstance(publisher, dict) and isinstance(publisher.get("name"), str):
-            source = publisher["name"].strip() or None
-            if source:
-                break
-    if source is None:
-        source = _meta_content(soup, "property", "og:site_name")
-    return published, source
+        publisher = _named_entity(node.get("publisher"))
+        if publisher:
+            break
+    if publisher is None:
+        publisher = _meta_content(soup, "property", "og:site_name")
+
+    reporter = next(
+        (name for node in nodes if (name := _named_entity(node.get("author"))) is not None),
+        None,
+    )
+    if reporter is None:
+        reporter = _meta_content(soup, "name", "author")
+    if reporter is None:
+        reporter = _meta_content(soup, "property", "article:author")
+    return published, reporter, publisher
 
 
 class GenericExtractor:
@@ -103,7 +122,7 @@ class GenericExtractor:
     async def extract(self, snapshot: PageSnapshot) -> list[PageItem]:
         """Extract a single generic page item."""
         soup = BeautifulSoup(snapshot.html, "lxml")
-        published_at, source = _article_metadata(soup)
+        published_at, reporter, publisher = _article_metadata(soup)
         for tag in soup.select("script, style, noscript, nav, footer"):
             tag.decompose()
         title = soup.title.get_text(" ", strip=True) if soup.title else ""
@@ -136,7 +155,7 @@ class GenericExtractor:
                 language=language,
                 http_status_code=snapshot.status_code,
                 published_at=published_at,
-                source=source,
-                raw_html=snapshot.html,
+                reporter=reporter,
+                publisher=publisher,
             )
         ]

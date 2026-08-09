@@ -23,6 +23,7 @@ from crawling_mcp.domain.models import (
     ScrapePageRequest,
 )
 from crawling_mcp.infrastructure.logging import mask_sensitive
+from crawling_mcp.ports.artifacts import FailureArtifactPort
 from crawling_mcp.ports.authentication import AuthContextProvider
 from crawling_mcp.ports.crawler import CrawlerEngine, CrawlerEngineFactory, UrlValidator
 from crawling_mcp.ports.extractor import ExtractorResolver
@@ -40,6 +41,7 @@ class CrawlService:
         extractors: ExtractorResolver,
         repository: CrawlRepository,
         auth: AuthContextProvider | None = None,
+        artifacts: FailureArtifactPort | None = None,
         limits: CrawlLimits | None = None,
     ) -> None:
         self._validator = validator
@@ -47,6 +49,7 @@ class CrawlService:
         self._extractors = extractors
         self._repository = repository
         self._auth = auth
+        self._artifacts = artifacts
         self._limits = limits or CrawlLimits()
         self._log = structlog.get_logger(__name__)
 
@@ -91,14 +94,26 @@ class CrawlService:
             error_code=error.code,
             message=error.message,
             details=mask_sensitive(error.details),
+            artifacts=dict(error.artifacts),
         )
+        if not failure.artifacts and self._artifacts is not None:
+            try:
+                paths = await self._artifacts.capture(job_id, error, page=None)
+                failure.artifacts = {
+                    key: value for key, value in paths.model_dump().items() if value is not None
+                }
+            except Exception as artifact_error:
+                self._log.error(
+                    "terminal_failure_artifact_capture_failed",
+                    job_id=str(job_id),
+                    error_type=type(artifact_error).__name__,
+                )
         try:
-            await self._repository.save_failure(job_id, failure)
-            await self._repository.set_counts(
+            stored = await self._repository.get_job(job_id)
+            await self._repository.save_failure(
                 job_id,
-                visited_pages=1,
-                succeeded_pages=0,
-                failed_pages=1,
+                failure,
+                count_page=stored is None or stored.visited_pages == 0,
             )
             await self._repository.complete_job(job_id)
         except Exception as persistence_error:
@@ -186,8 +201,7 @@ class CrawlService:
             error.attach_job_id(context.job_id)
             self._log.warning("scrape_failed", error_code=error.code, **log_context)
             raise
-        for item in items:
-            await self._repository.save_page(context.job_id, item)
+        await self._repository.save_page(context.job_id, items, snapshot)
         await self._repository.set_counts(
             context.job_id,
             visited_pages=1,
@@ -237,6 +251,13 @@ class CrawlService:
             domain=validated.hostname,
             adapter_name=extractor.name,
         )
+        persisted_items: set[int] = set()
+
+        async def persist_page(snapshot: PageSnapshot, items: list[PageItem]) -> None:
+            await self._repository.save_page(context.job_id, items, snapshot)
+            persisted_items.update(id(item) for item in items)
+
+        context.page_handler = persist_page
         log_context = {
             "job_id": str(context.job_id),
             "url": validated.url,
@@ -262,8 +283,11 @@ class CrawlService:
             error.attach_job_id(context.job_id)
             self._log.warning("crawl_failed", error_code=error.code, **log_context)
             raise
-        for item in result.items:
-            await self._repository.save_page(context.job_id, item)
+        if any(id(item) not in persisted_items for item in result.items):
+            raise NavigationError(
+                url=validated.url,
+                reason="crawler_did_not_deliver_page_snapshot",
+            )
         for failure in result.failures:
             await self._repository.save_failure(context.job_id, failure)
         await self._repository.set_counts(

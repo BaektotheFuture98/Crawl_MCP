@@ -34,7 +34,9 @@ async def test_minio_store_writes_job_scoped_html_with_checksum() -> None:
     stored = await store.put_html(job_id, url, html)
 
     url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()
-    assert stored.key == f"jobs/{job_id}/pages/{url_hash}/raw.html"
+    content_hash = hashlib.sha256(html.encode("utf-8")).hexdigest()
+    assert stored.key.startswith(f"jobs/{job_id}/pages/{url_hash}/")
+    assert stored.key.endswith(f"/{content_hash}/raw.html")
     assert stored.uri == f"s3://crawl-data/{stored.key}"
     assert stored.sha256 == hashlib.sha256(html.encode("utf-8")).hexdigest()
     assert stored.size_bytes == len(html.encode("utf-8"))

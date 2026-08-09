@@ -191,6 +191,7 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
         max_content_bytes=configured.max_content_bytes,
         max_links_per_page=configured.max_links_per_page,
         robots=robots,
+        artifacts=artifacts,
     )
     browser_engine = BrowserCrawlerEngine(
         validator=validator,
@@ -214,6 +215,7 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
         extractors=extractors,
         repository=repository,
         auth=auth_service,
+        artifacts=artifacts,
         limits=CrawlLimits(
             max_pages=configured.max_pages_limit,
             max_depth=configured.max_depth_limit,

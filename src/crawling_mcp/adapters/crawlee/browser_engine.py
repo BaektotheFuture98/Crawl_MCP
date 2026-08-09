@@ -131,7 +131,7 @@ class BrowserCrawlerEngine:
                 if isinstance(error, CrawlError)
                 else NavigationError(url=request.url, reason=type(error).__name__)
             )
-            await self._capture_artifacts(context, domain_error, page)
+            domain_error.artifacts = await self._capture_artifacts(context, domain_error, page)
             raise domain_error from error
         finally:
             await page.close()
@@ -203,6 +203,8 @@ class BrowserCrawlerEngine:
                 snapshot.depth = depth
                 snapshot.page_type = self._router.classify(snapshot, domain=context.domain)
                 items = await extractor.extract(snapshot)
+                if context.page_handler is not None:
+                    await context.page_handler(snapshot, items)
                 async with result_lock:
                     result.items.extend(items)
                     result.visited_pages += 1

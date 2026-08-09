@@ -4,7 +4,9 @@ import asyncio
 import hashlib
 import io
 from typing import Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
+
+from minio.error import S3Error
 
 from crawling_mcp.ports.object_store import ObjectStore, StoredObject
 
@@ -38,7 +40,11 @@ class MinioObjectStore(ObjectStore):
                 return
             exists = await asyncio.to_thread(self._client.bucket_exists, self._bucket)
             if not exists:
-                await asyncio.to_thread(self._client.make_bucket, self._bucket)
+                try:
+                    await asyncio.to_thread(self._client.make_bucket, self._bucket)
+                except S3Error as error:
+                    if error.code not in {"BucketAlreadyExists", "BucketAlreadyOwnedByYou"}:
+                        raise
             self._bucket_ready = True
 
     async def _put(self, *, key: str, data: bytes, content_type: str) -> StoredObject:
@@ -63,9 +69,11 @@ class MinioObjectStore(ObjectStore):
 
     async def put_html(self, job_id: UUID, url: str, html: str) -> StoredObject:
         url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()
+        data = html.encode("utf-8")
+        content_hash = hashlib.sha256(data).hexdigest()
         return await self._put(
-            key=f"jobs/{job_id}/pages/{url_hash}/raw.html",
-            data=html.encode("utf-8"),
+            key=f"jobs/{job_id}/pages/{url_hash}/{uuid4()}/{content_hash}/raw.html",
+            data=data,
             content_type="text/html; charset=utf-8",
         )
 

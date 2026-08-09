@@ -6,13 +6,13 @@
 
 **Architecture:** Keep the application service and MCP response models independent of storage. Add article metadata to the extracted page model, pass the source snapshot to the repository, and implement a PostgreSQL repository backed by a small MinIO object-store adapter. PostgreSQL owns queryable metadata and references immutable MinIO objects by job-scoped keys.
 
-**Tech Stack:** Python 3.12, SQLAlchemy async + asyncpg, Alembic, MinIO Python SDK, PostgreSQL 16, MinIO, Docker Compose.
+**Tech Stack:** Python 3.12, SQLAlchemy async + asyncpg, Alembic, MinIO Python SDK, PostgreSQL 18, MinIO, Docker Compose.
 
 ## Global Constraints
 
 - Preserve all existing MCP tool inputs and response shapes; the new article metadata fields are additive.
 - Store one article row per extraction per crawl job; never upsert by URL.
-- Store article `published_at` and `source` as nullable when metadata is unavailable.
+- Store article `published_at`, `reporter`, and `publisher` as nullable when metadata is unavailable.
 - Store every successful raw HTML page and all failure diagnostics in MinIO.
 - Do not expose database query MCP tools in this change.
 
@@ -27,7 +27,8 @@
 
 **Interfaces:**
 - `PageItem.published_at: datetime | None`
-- `PageItem.source: str | None`
+- `PageItem.reporter: str | None`
+- `PageItem.publisher: str | None`
 
 - [ ] Write tests for JSON-LD, Open Graph and `<time>` metadata precedence and missing values.
 - [ ] Run the focused extractor tests and observe failures for absent fields.
@@ -61,7 +62,8 @@
 - Modify: `tests/integration/test_postgres_repository.py`
 
 **Interfaces:**
-- `crawl_jobs`, `articles`, and `crawl_failures` tables.
+- Existing public `ARTICLE(id, ar_title, ar_content, reporter, publisher, url, published_at)`.
+- `crawl_jobs`, `crawl_article_objects`, and `crawl_failures` sidecar tables.
 - `PostgresRepository` implements `CrawlRepository` and persists article object references.
 
 - [ ] Write integration tests for append-only URLs, nullable metadata, job completion and MinIO references.

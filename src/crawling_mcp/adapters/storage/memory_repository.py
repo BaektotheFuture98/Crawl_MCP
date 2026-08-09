@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from uuid import UUID
 
-from crawling_mcp.domain.models import CrawlFailure, CrawlResult, PageItem, utc_now
+from crawling_mcp.domain.models import CrawlFailure, CrawlResult, PageItem, PageSnapshot, utc_now
 
 
 class InMemoryRepository:
@@ -18,21 +18,24 @@ class InMemoryRepository:
         async with self._lock:
             self._jobs[result.job_id] = result.model_copy(deep=True)
 
-    async def save_page(self, job_id: UUID, item: PageItem) -> None:
-        """Append a successful page."""
+    async def save_page(self, job_id: UUID, items: list[PageItem], snapshot: PageSnapshot) -> None:
+        """Append every item extracted from one successful page."""
         async with self._lock:
             job = self._jobs[job_id]
-            job.items.append(item.model_copy(deep=True))
+            job.items.extend(item.model_copy(deep=True) for item in items)
             job.succeeded_pages += 1
             job.visited_pages += 1
 
-    async def save_failure(self, job_id: UUID, failure: CrawlFailure) -> None:
+    async def save_failure(
+        self, job_id: UUID, failure: CrawlFailure, *, count_page: bool = True
+    ) -> None:
         """Append a failed page."""
         async with self._lock:
             job = self._jobs[job_id]
             job.failures.append(failure.model_copy(deep=True))
-            job.failed_pages += 1
-            job.visited_pages += 1
+            if count_page:
+                job.failed_pages += 1
+                job.visited_pages += 1
 
     async def set_counts(
         self,

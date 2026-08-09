@@ -39,6 +39,18 @@ class RecordingObjectStore:
         raise AssertionError("not used")
 
 
+class FailingObjectStore(RecordingObjectStore):
+    async def put_artifact(
+        self,
+        job_id: object,
+        artifact_id: object,
+        name: str,
+        data: bytes,
+        content_type: str,
+    ) -> StoredObject:
+        raise RuntimeError("object store unavailable")
+
+
 class FakePage:
     async def content(self) -> str:
         return """<html><body><input name="username" value="reader-name">
@@ -94,7 +106,7 @@ async def test_failure_writer_never_replaces_original_error_on_filesystem_failur
 
     paths = await writer.capture(uuid4(), AuthenticationFailedError(reason="original"))
 
-    assert paths.error_json.endswith("error.json")
+    assert paths.error_json is None
 
 
 @pytest.mark.asyncio
@@ -143,3 +155,12 @@ async def test_minio_failure_writer_is_best_effort_when_page_capture_fails() -> 
     )
 
     assert paths.error_json.startswith("s3://crawl-data/")
+
+
+@pytest.mark.asyncio
+async def test_minio_failure_writer_does_not_fabricate_uri_when_upload_fails() -> None:
+    writer = MinioFailureArtifactWriter(FailingObjectStore())
+
+    paths = await writer.capture(uuid4(), AuthenticationFailedError(reason="original"))
+
+    assert paths.error_json is None

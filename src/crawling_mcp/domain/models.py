@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -82,8 +83,8 @@ class PageItem(BaseModel):
     language: str | None = None
     http_status_code: int | None = None
     published_at: datetime | None = None
-    source: str | None = None
-    raw_html: str | None = Field(default=None, exclude=True, repr=False)
+    reporter: str | None = None
+    publisher: str | None = None
     collected_at: datetime = Field(default_factory=utc_now)
 
 
@@ -139,6 +140,11 @@ class CrawlContext(BaseModel):
     adapter_name: str = "generic"
     authenticated: bool = False
     browser_context: Any | None = None
+    page_handler: Callable[[PageSnapshot, list[PageItem]], Awaitable[None]] | None = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+    )
 
 
 class AuthProfile(BaseModel):
@@ -169,7 +175,7 @@ class SupportedSite(BaseModel):
 class ArtifactPaths(BaseModel):
     """Paths to failure diagnostics captured for a job."""
 
-    error_json: str
+    error_json: str | None = None
     html: str | None = None
     screenshot: str | None = None
     accessibility_snapshot: str | None = None
