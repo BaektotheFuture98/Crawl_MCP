@@ -30,14 +30,15 @@ src/crawling_mcp/
 │   ├── crawlee/      # HTTP/browser/adaptive engine, factory, router
 │   ├── auth/         # registry, no-auth, saved session, example login
 │   ├── extractors/   # generic/example extractor와 registry
-│   └── storage/      # memory/file repository
+│   └── storage/      # memory/file/PostgreSQL repository와 MinIO object store
 ├── infrastructure/   # 설정, SSRF, egress proxy, robots, logging, browser, artifacts
 ├── bootstrap.py      # dependency composition root
 ├── server.py         # FastMCP lifespan
 └── test_site.py      # 개발 전용 로그인 사이트
 ```
 
-런타임 데이터는 `data/auth`, `data/results`, `data/failures`, `data/screenshots`에 저장되며 Git에서 제외됩니다.
+인증 storage state는 `data/auth`에 저장됩니다. 운영 크롤링 결과는 PostgreSQL에, 원본 HTML과
+실패 아티팩트는 MinIO에 저장되며 Git에서 제외됩니다.
 
 ## 로컬 설치와 실행
 
@@ -113,7 +114,7 @@ Codex, Claude Desktop 등 STDIO MCP Client에서는 절대 경로를 사용합�
 }
 ```
 
-성공 결과에는 `url`, `title`, `content`, `metadata`, `meta_description`, `canonical_url`, `language`, `http_status_code`, `collected_at`이 포함됩니다.
+성공 결과에는 `url`, `title`, `content`, `metadata`, `meta_description`, `canonical_url`, `language`, `http_status_code`, `published_at`, `source`, `collected_at`이 포함됩니다.
 
 ### `crawl_site`
 
@@ -208,12 +209,21 @@ uv run pytest -m integration
 
 기본 pytest는 빠른 단위 테스트만 실행합니다. `integration` marker는 로컬 FastAPI 포트와 Chromium을 사용하며 공개 수집, 인증, storage-state 재사용, 만료 후 재로그인, 목록·상세 탐색, 실패 처리를 검증합니다.
 
+PostgreSQL·MinIO 적재 검증은 Compose storage 서비스를 먼저 기동한 뒤 명시적으로 실행합니다.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.test.yml --profile test up -d postgres minio migrate
+CRAWLING_MCP_RUN_STORAGE_INTEGRATION=1 uv run pytest -m integration tests/integration/test_postgres_minio_storage.py
+```
+
 ## 실패 파일
 
-브라우저 navigation 또는 extraction 실패 시 가능한 범위에서 다음을 저장합니다.
+`repository=postgres`에서는 브라우저 navigation 또는 extraction 실패 시 가능한 범위에서 다음을
+MinIO `jobs/{job_id}/failures/{failure_id}/` prefix에 저장합니다. 실패 응답의 artifact 값은 해당
+객체의 `s3://` URI입니다.
 
 ```text
-data/failures/{job_id}/
+jobs/{job_id}/failures/{failure_id}/
 ├── error.json
 ├── page.html
 ├── screenshot.png
@@ -221,6 +231,20 @@ data/failures/{job_id}/
 ```
 
 `error.json`은 traceback을 포함하지 않으며 민감 key를 재귀적으로 마스킹합니다. HTML의 password/token input value도 저장 전에 제거합니다. 아티팩트 저장 실패는 원래 도메인 오류를 덮어쓰지 않습니다.
+
+## PostgreSQL 기사 적재
+
+`repository=postgres`에서 수집 실행은 `crawl_jobs`에, 추출된 기사는 `articles`에 append-only로
+저장됩니다. `articles`의 핵심 열은 `collected_at`(수집 시간), `published_at`(기사 작성 시간),
+`title`, `content`, `source`, `url`입니다. 같은 URL을 재수집해도 행을 갱신하지 않습니다.
+
+작성 시간과 출처는 JSON-LD, Open Graph, 표준 article metadata를 차례로 해석하며 찾을 수 없으면
+`NULL`로 저장합니다. PostgreSQL에는 원본 HTML의 MinIO key·URI·SHA-256·크기를 함께 기록합니다.
+스키마는 `alembic upgrade head`로 적용되며 Compose의 `migrate` 서비스가 MCP 서버보다 먼저 이를 수행합니다.
+
+운영에서는 `CRAWLING_MCP_POSTGRES_DSN`, `CRAWLING_MCP_MINIO_ENDPOINT`,
+`CRAWLING_MCP_MINIO_ACCESS_KEY`, `CRAWLING_MCP_MINIO_SECRET_KEY`,
+`CRAWLING_MCP_MINIO_BUCKET`, `CRAWLING_MCP_MINIO_SECURE`를 Secret Manager 또는 환경변수로 제공합니다.
 
 ## 보안
 
@@ -242,5 +266,5 @@ data/failures/{job_id}/
 - 임의 사이트 로그인 form을 자동 추측하지 않습니다.
 - Adaptive HTTP→browser 전환은 본문 길이·JS shell·login redirect 휴리스틱입니다.
 - Browser traversal은 작업별 context 안에서 bounded worker queue를 사용하며 `max_concurrency`, 사이트별 요청 간격, robots.txt를 함께 적용합니다.
-- FileRepository는 단일 호스트용입니다. 다중 replica는 같은 Repository Protocol의 PostgreSQL 구현과 분산 queue가 필요합니다.
+- PostgreSQL repository는 crawl 결과의 영속화만 담당합니다. 대규모 다중 replica 탐색에는 별도 분산 queue와 작업 조정이 필요합니다.
 - 운영 사설망 crawling은 기본 제공하지 않습니다. `allow_private_networks`는 로컬 통합 테스트 또는 격리된 테스트 Compose에서만 사용하십시오.

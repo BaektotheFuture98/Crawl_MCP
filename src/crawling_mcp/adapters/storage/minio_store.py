@@ -14,6 +14,10 @@ class MinioClient(Protocol):
 
     def put_object(self, **kwargs: object) -> object: ...
 
+    def bucket_exists(self, bucket_name: str) -> bool: ...
+
+    def make_bucket(self, bucket_name: str) -> object: ...
+
     def remove_object(self, bucket_name: str, object_name: str) -> object: ...
 
 
@@ -23,9 +27,23 @@ class MinioObjectStore(ObjectStore):
     def __init__(self, *, bucket: str, client: MinioClient) -> None:
         self._bucket = bucket
         self._client = client
+        self._bucket_ready = False
+        self._bucket_lock = asyncio.Lock()
+
+    async def _ensure_bucket(self) -> None:
+        if self._bucket_ready:
+            return
+        async with self._bucket_lock:
+            if self._bucket_ready:
+                return
+            exists = await asyncio.to_thread(self._client.bucket_exists, self._bucket)
+            if not exists:
+                await asyncio.to_thread(self._client.make_bucket, self._bucket)
+            self._bucket_ready = True
 
     async def _put(self, *, key: str, data: bytes, content_type: str) -> StoredObject:
         digest = hashlib.sha256(data).hexdigest()
+        await self._ensure_bucket()
         await asyncio.to_thread(
             self._client.put_object,
             bucket_name=self._bucket,

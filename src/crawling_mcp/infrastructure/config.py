@@ -13,8 +13,14 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CRAWLING_MCP_", env_file=".env", extra="ignore")
 
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
-    repository: Literal["memory", "file"] = "file"
+    repository: Literal["memory", "file", "postgres"] = "file"
     data_dir: Path = Path("data")
+    postgres_dsn: str = "postgresql+asyncpg://crawler:crawler@127.0.0.1:5432/crawling"
+    minio_endpoint: str = "127.0.0.1:9000"
+    minio_access_key: str = "minioadmin"
+    minio_secret_key: str = "minioadmin"
+    minio_bucket: str = "crawl-data"
+    minio_secure: bool = False
     auth_profiles_path: Path = Path("config/auth_profiles.yaml")
     allow_private_networks: bool = False
     domain_allowlist: list[str] = Field(default_factory=list)

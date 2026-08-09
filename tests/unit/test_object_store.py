@@ -11,6 +11,13 @@ from crawling_mcp.adapters.storage.minio_store import MinioObjectStore
 class RecordingMinioClient:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
+        self.buckets: set[str] = set()
+
+    def bucket_exists(self, bucket_name: str) -> bool:
+        return bucket_name in self.buckets
+
+    def make_bucket(self, bucket_name: str) -> None:
+        self.buckets.add(bucket_name)
 
     def put_object(self, **kwargs: object) -> None:
         self.calls.append(kwargs)
@@ -34,3 +41,14 @@ async def test_minio_store_writes_job_scoped_html_with_checksum() -> None:
     assert client.calls[0]["bucket_name"] == "crawl-data"
     assert client.calls[0]["object_name"] == stored.key
     assert client.calls[0]["content_type"] == "text/html; charset=utf-8"
+
+
+@pytest.mark.asyncio
+async def test_minio_store_creates_missing_bucket_once_before_uploads() -> None:
+    client = RecordingMinioClient()
+    store = MinioObjectStore(bucket="crawl-data", client=client)
+
+    await store.put_html(uuid4(), "https://example.com/one", "<html>one</html>")
+    await store.put_html(uuid4(), "https://example.com/two", "<html>two</html>")
+
+    assert client.buckets == {"crawl-data"}

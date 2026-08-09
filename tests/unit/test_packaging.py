@@ -8,23 +8,26 @@ import yaml
 def test_compose_declares_services_and_isolated_data_volumes() -> None:
     compose = yaml.safe_load(Path("docker-compose.yml").read_text(encoding="utf-8"))
 
-    assert set(compose["services"]) == {"mcp-server", "test-site"}
+    assert set(compose["services"]) == {"mcp-server", "test-site", "postgres", "minio", "migrate"}
     assert set(compose["volumes"]) == {
         "auth-data",
-        "results-data",
         "failures-data",
         "screenshots-data",
+        "postgres-data",
+        "minio-data",
     }
     mounts = set(compose["services"]["mcp-server"]["volumes"])
     assert mounts == {
         "auth-data:/app/data/auth",
-        "results-data:/app/data/results",
         "failures-data:/app/data/failures",
         "screenshots-data:/app/data/screenshots",
     }
     mcp = compose["services"]["mcp-server"]
     assert mcp["environment"]["CRAWLING_MCP_ALLOW_PRIVATE_NETWORKS"] == "false"
-    assert "depends_on" not in mcp
+    assert mcp["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
+    assert compose["services"]["postgres"]["healthcheck"]
+    assert compose["services"]["minio"]["healthcheck"]
+    assert "curl" in compose["services"]["minio"]["healthcheck"]["test"][1]
     assert compose["services"]["test-site"]["profiles"] == ["test"]
 
 

@@ -11,8 +11,9 @@ WORKDIR /app
 
 RUN groupadd --system crawling && useradd --system --gid crawling --create-home crawling
 
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock README.md alembic.ini ./
 COPY src ./src
+COPY alembic ./alembic
 RUN uv sync --frozen --no-dev --no-editable
 
 COPY config ./config
@@ -23,4 +24,3 @@ RUN mkdir -p data/auth data/results data/failures data/screenshots \
 USER crawling
 
 ENTRYPOINT ["/app/.venv/bin/python", "-m", "crawling_mcp"]
-

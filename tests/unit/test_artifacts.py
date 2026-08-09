@@ -7,7 +7,36 @@ from uuid import uuid4
 import pytest
 
 from crawling_mcp.domain.errors import AuthenticationFailedError
-from crawling_mcp.infrastructure.artifacts import FailureArtifactWriter
+from crawling_mcp.infrastructure.artifacts import FailureArtifactWriter, MinioFailureArtifactWriter
+from crawling_mcp.ports.object_store import StoredObject
+
+
+class RecordingObjectStore:
+    def __init__(self) -> None:
+        self.artifacts: dict[str, bytes] = {}
+
+    async def put_html(self, job_id: object, url: str, html: str) -> StoredObject:
+        raise AssertionError("failure artifact writer must not write a page payload")
+
+    async def put_artifact(
+        self,
+        job_id: object,
+        artifact_id: object,
+        name: str,
+        data: bytes,
+        content_type: str,
+    ) -> StoredObject:
+        self.artifacts[name] = data
+        return StoredObject(
+            key=f"jobs/{job_id}/failures/{artifact_id}/{name}",
+            uri=f"s3://crawl-data/jobs/{job_id}/failures/{artifact_id}/{name}",
+            sha256="a" * 64,
+            size_bytes=len(data),
+            content_type=content_type,
+        )
+
+    async def delete(self, key: str) -> None:
+        raise AssertionError("not used")
 
 
 class FakePage:
@@ -23,6 +52,11 @@ class FakePage:
 
     async def aria_snapshot(self) -> str:
         return '- textbox "아이디": reader-name\n- textbox "비밀번호": reader-secret'
+
+
+class BrokenContentPage(FakePage):
+    async def content(self) -> str:
+        raise RuntimeError("content unavailable")
 
 
 @pytest.mark.asyncio
@@ -76,3 +110,36 @@ async def test_failure_writer_keeps_concurrent_page_artifacts_distinct(tmp_path:
     assert first.error_json != second.error_json
     assert await asyncio.to_thread(Path(first.error_json).is_file)
     assert await asyncio.to_thread(Path(second.error_json).is_file)
+
+
+@pytest.mark.asyncio
+async def test_minio_failure_writer_stores_redacted_artifacts_as_object_references() -> None:
+    objects = RecordingObjectStore()
+    writer = MinioFailureArtifactWriter(objects)
+    error = AuthenticationFailedError(domain="example.com", password="secret")
+
+    paths = await writer.capture(
+        uuid4(),
+        error,
+        page=FakePage(),
+        sensitive_values=("reader-name", "reader-secret"),
+    )
+
+    assert paths.error_json.startswith("s3://crawl-data/")
+    assert paths.html is not None and paths.html.startswith("s3://crawl-data/")
+    assert paths.screenshot is not None and paths.screenshot.startswith("s3://crawl-data/")
+    assert paths.accessibility_snapshot is not None
+    assert "secret" not in objects.artifacts["error.json"].decode("utf-8")
+    assert "reader-name" not in objects.artifacts["page.html"].decode("utf-8")
+    assert "reader-secret" not in objects.artifacts["accessibility_snapshot.txt"].decode("utf-8")
+
+
+@pytest.mark.asyncio
+async def test_minio_failure_writer_is_best_effort_when_page_capture_fails() -> None:
+    writer = MinioFailureArtifactWriter(RecordingObjectStore())
+
+    paths = await writer.capture(
+        uuid4(), AuthenticationFailedError(reason="original"), page=BrokenContentPage()
+    )
+
+    assert paths.error_json.startswith("s3://crawl-data/")

@@ -1,4 +1,12 @@
 services:
+  postgres:
+    ports:
+      - "54329:5432"
+
+  minio:
+    ports:
+      - "9009:9000"
+
   mcp-server:
     environment:
       CRAWLING_MCP_ALLOW_PRIVATE_NETWORKS: "true"

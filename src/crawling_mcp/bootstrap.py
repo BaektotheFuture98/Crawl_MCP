@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from typing import cast
+
+from minio import Minio
+from sqlalchemy.ext.asyncio import create_async_engine
+
 from crawling_mcp.adapters.auth.example_login import ExampleLoginAdapter
 from crawling_mcp.adapters.auth.no_auth import NoAuthAdapter
 from crawling_mcp.adapters.auth.registry import AuthRegistry
@@ -18,6 +23,8 @@ from crawling_mcp.adapters.extractors.generic import GenericExtractor
 from crawling_mcp.adapters.extractors.registry import ExtractorRegistry
 from crawling_mcp.adapters.storage.file_repository import FileRepository
 from crawling_mcp.adapters.storage.memory_repository import InMemoryRepository
+from crawling_mcp.adapters.storage.minio_store import MinioClient, MinioObjectStore
+from crawling_mcp.adapters.storage.postgres_repository import PostgresRepository
 from crawling_mcp.application.auth_service import AuthService
 from crawling_mcp.application.crawl_service import CrawlService
 from crawling_mcp.domain.models import (
@@ -28,12 +35,13 @@ from crawling_mcp.domain.models import (
     ScrapePageRequest,
     SupportedSite,
 )
-from crawling_mcp.infrastructure.artifacts import FailureArtifactWriter
+from crawling_mcp.infrastructure.artifacts import FailureArtifactWriter, MinioFailureArtifactWriter
 from crawling_mcp.infrastructure.browser import BrowserManager
 from crawling_mcp.infrastructure.config import Settings
 from crawling_mcp.infrastructure.egress_proxy import SafeEgressProxy
 from crawling_mcp.infrastructure.robots import RobotsTxtChecker
 from crawling_mcp.infrastructure.security import UrlSecurityValidator
+from crawling_mcp.ports.artifacts import FailureArtifactPort
 from crawling_mcp.ports.repository import CrawlRepository
 
 
@@ -136,8 +144,24 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
             extractors.register(profile.domain, ExampleExtractor())
             navigation.register(profile.domain, ExampleNavigationAdapter())
     repository: CrawlRepository
+    objects: MinioObjectStore | None = None
     if configured.repository == "memory":
         repository = InMemoryRepository()
+    elif configured.repository == "postgres":
+        minio_client = Minio(
+            configured.minio_endpoint,
+            access_key=configured.minio_access_key,
+            secret_key=configured.minio_secret_key,
+            secure=configured.minio_secure,
+        )
+        objects = MinioObjectStore(
+            bucket=configured.minio_bucket,
+            client=cast(MinioClient, minio_client),
+        )
+        repository = PostgresRepository(
+            engine=create_async_engine(configured.postgres_dsn),
+            objects=objects,
+        )
     else:
         repository = FileRepository(configured.data_dir / "results")
     browser = BrowserManager(
@@ -145,7 +169,11 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
         max_contexts=configured.browser_max_contexts,
         egress_proxy=egress_proxy,
     )
-    artifacts = FailureArtifactWriter(configured.data_dir / "failures")
+    artifacts: FailureArtifactPort
+    if objects is None:
+        artifacts = FailureArtifactWriter(configured.data_dir / "failures")
+    else:
+        artifacts = MinioFailureArtifactWriter(objects)
     auth_service = AuthService(
         profiles=profiles,
         registry=auth_registry,
