@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from crawling_mcp.adapters.extractors.generic import GenericExtractor
@@ -34,6 +36,44 @@ async def test_generic_extractor_removes_chrome_and_extracts_metadata() -> None:
     assert item.http_status_code == 200
     assert "secret" not in item.content
     assert "메뉴" not in item.content
+
+
+@pytest.mark.asyncio
+async def test_generic_extractor_extracts_article_metadata_from_json_ld() -> None:
+    snapshot = PageSnapshot(
+        url="https://news.example.com/article/1",
+        status_code=200,
+        html="""
+        <html><head>
+        <title>문서 제목</title>
+        <meta property="article:published_time" content="2026-08-09T10:00:00+09:00">
+        <meta property="og:site_name" content="대체 출처">
+        <script type="application/ld+json">
+        {"@type":"NewsArticle","datePublished":"2026-08-10T09:30:00+09:00",
+         "publisher":{"name":"동아일보"}}
+        </script>
+        </head><body><article><p>기사 본문입니다.</p></article></body></html>
+        """,
+    )
+
+    item = (await GenericExtractor().extract(snapshot))[0]
+
+    assert item.published_at == datetime(2026, 8, 10, 0, 30, tzinfo=UTC)
+    assert item.source == "동아일보"
+    assert item.content == "기사 본문입니다."
+
+
+@pytest.mark.asyncio
+async def test_generic_extractor_leaves_article_metadata_null_when_missing() -> None:
+    snapshot = PageSnapshot(
+        url="https://example.com/plain",
+        html="<html><head><title>문서</title></head><body><main>본문</main></body></html>",
+    )
+
+    item = (await GenericExtractor().extract(snapshot))[0]
+
+    assert item.published_at is None
+    assert item.source is None
 
 
 def test_extractor_registry_uses_exact_registration_and_public_fallback() -> None:

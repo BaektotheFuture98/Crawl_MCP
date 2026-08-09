@@ -81,6 +81,8 @@ class PageItem(BaseModel):
     canonical_url: str | None = None
     language: str | None = None
     http_status_code: int | None = None
+    published_at: datetime | None = None
+    source: str | None = None
     collected_at: datetime = Field(default_factory=utc_now)
 
 
