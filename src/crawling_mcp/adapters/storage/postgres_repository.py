@@ -21,9 +21,7 @@ class PostgresRepository:
         self._objects = objects
 
     @staticmethod
-    def article_values(
-        job_id: UUID, item: PageItem, raw_html: StoredObject
-    ) -> dict[str, Any]:
+    def article_values(job_id: UUID, item: PageItem, raw_html: StoredObject) -> dict[str, Any]:
         """Map an extracted page and immutable object metadata into one article row."""
         return {
             "id": uuid4(),
@@ -180,30 +178,42 @@ class PostgresRepository:
     async def get_job(self, job_id: UUID) -> CrawlResult | None:
         async with self._engine.connect() as connection:
             job = (
-                await connection.execute(
-                    text("SELECT * FROM crawl_jobs WHERE id = :job_id"), {"job_id": job_id}
+                (
+                    await connection.execute(
+                        text("SELECT * FROM crawl_jobs WHERE id = :job_id"), {"job_id": job_id}
+                    )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             if job is None:
                 return None
             article_rows = (
-                await connection.execute(
-                    text(
-                        "SELECT * FROM articles WHERE crawl_job_id = :job_id "
-                        "ORDER BY collected_at, id"
-                    ),
-                    {"job_id": job_id},
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT * FROM articles WHERE crawl_job_id = :job_id "
+                            "ORDER BY collected_at, id"
+                        ),
+                        {"job_id": job_id},
+                    )
                 )
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
             failure_rows = (
-                await connection.execute(
-                    text(
-                        "SELECT * FROM crawl_failures WHERE crawl_job_id = :job_id "
-                        "ORDER BY created_at, id"
-                    ),
-                    {"job_id": job_id},
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT * FROM crawl_failures WHERE crawl_job_id = :job_id "
+                            "ORDER BY created_at, id"
+                        ),
+                        {"job_id": job_id},
+                    )
                 )
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
         items = [
             PageItem(
                 url=str(row["url"]),
