@@ -83,6 +83,7 @@ class PageItem(BaseModel):
     http_status_code: int | None = None
     published_at: datetime | None = None
     source: str | None = None
+    raw_html: str | None = Field(default=None, exclude=True, repr=False)
     collected_at: datetime = Field(default_factory=utc_now)
 
 

@@ -137,5 +137,6 @@ class GenericExtractor:
                 http_status_code=snapshot.status_code,
                 published_at=published_at,
                 source=source,
+                raw_html=snapshot.html,
             )
         ]

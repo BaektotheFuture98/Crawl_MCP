@@ -61,6 +61,8 @@ async def test_generic_extractor_extracts_article_metadata_from_json_ld() -> Non
     assert item.published_at == datetime(2026, 8, 10, 0, 30, tzinfo=UTC)
     assert item.source == "동아일보"
     assert item.content == "기사 본문입니다."
+    assert item.raw_html == snapshot.html
+    assert "raw_html" not in item.model_dump()
 
 
 @pytest.mark.asyncio
