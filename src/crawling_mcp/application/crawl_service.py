@@ -14,6 +14,7 @@ from crawling_mcp.domain.errors import (
 )
 from crawling_mcp.domain.models import (
     CrawlContext,
+    CrawlExecution,
     CrawlFailure,
     CrawlLimits,
     CrawlRequest,
@@ -21,6 +22,7 @@ from crawling_mcp.domain.models import (
     PageItem,
     PageSnapshot,
     ScrapePageRequest,
+    utc_now,
 )
 from crawling_mcp.infrastructure.logging import mask_sensitive
 from crawling_mcp.ports.authentication import AuthContextProvider
@@ -227,7 +229,9 @@ class CrawlService:
             await self._persist_terminal_failure(job_id=job_id, url=request.url, error=domain_error)
             raise domain_error from error
 
-    async def _run_crawl_site(self, request: CrawlRequest, job_id: UUID) -> CrawlResult:
+    async def _run_crawl_site(
+        self, request: CrawlRequest, job_id: UUID, execution: CrawlExecution | None
+    ) -> CrawlResult:
         validated = await self._validator.validate(request.start_url)
         authenticated = request.auth_profile is not None
         extractor = self._extractors.get(validated.hostname, authenticated=authenticated)
@@ -236,6 +240,11 @@ class CrawlService:
             job_id=job_id,
             domain=validated.hostname,
             adapter_name=extractor.name,
+            cache_entries=execution.cache_entries if execution is not None else {},
+            page_handler=execution.page_handler if execution is not None else None,
+            not_modified_handler=(
+                execution.not_modified_handler if execution is not None else None
+            ),
         )
         log_context = {
             "job_id": str(context.job_id),
@@ -262,6 +271,17 @@ class CrawlService:
             error.attach_job_id(context.job_id)
             self._log.warning("crawl_failed", error_code=error.code, **log_context)
             raise
+        if execution is not None and not execution.persist_result:
+            completed = result.model_copy(update={"completed_at": result.completed_at or utc_now()})
+            self._log.info(
+                "crawl_completed",
+                visited_pages=completed.visited_pages,
+                succeeded_pages=completed.succeeded_pages,
+                failed_pages=completed.failed_pages,
+                persisted=False,
+                **log_context,
+            )
+            return completed
         for item in result.items:
             await self._repository.save_page(context.job_id, item)
         for failure in result.failures:
@@ -285,29 +305,37 @@ class CrawlService:
         )
         return stored
 
-    async def crawl_site(self, request: CrawlRequest) -> CrawlResult:
+    async def crawl_site(
+        self, request: CrawlRequest, *, execution: CrawlExecution | None = None
+    ) -> CrawlResult:
         """Run a bounded crawl job under one end-to-end deadline."""
         self._enforce_crawl_limits(request)
-        job_id = uuid4()
+        job_id = execution.job_id if execution is not None and execution.job_id else uuid4()
+        persist_result = execution is None or execution.persist_result
         try:
             async with asyncio.timeout(request.job_timeout_seconds):
-                await self._repository.start_job(
-                    CrawlResult(job_id=job_id, start_url=request.start_url)
-                )
-                return await self._run_crawl_site(request, job_id)
+                if persist_result:
+                    await self._repository.start_job(
+                        CrawlResult(job_id=job_id, start_url=request.start_url)
+                    )
+                return await self._run_crawl_site(request, job_id, execution)
         except TimeoutError as error:
             domain_error = NavigationError(
                 url=request.start_url,
                 reason="job_timeout",
                 job_id=job_id,
             )
-            await self._persist_terminal_failure(
-                job_id=job_id, url=request.start_url, error=domain_error
-            )
+            if persist_result:
+                await self._persist_terminal_failure(
+                    job_id=job_id, url=request.start_url, error=domain_error
+                )
             raise domain_error from error
         except CrawlError as error:
             error.attach_job_id(job_id)
-            await self._persist_terminal_failure(job_id=job_id, url=request.start_url, error=error)
+            if persist_result:
+                await self._persist_terminal_failure(
+                    job_id=job_id, url=request.start_url, error=error
+                )
             raise
         except Exception as error:
             domain_error = NavigationError(
@@ -315,9 +343,10 @@ class CrawlService:
                 reason="internal_error",
                 job_id=job_id,
             )
-            await self._persist_terminal_failure(
-                job_id=job_id, url=request.start_url, error=domain_error
-            )
+            if persist_result:
+                await self._persist_terminal_failure(
+                    job_id=job_id, url=request.start_url, error=domain_error
+                )
             raise domain_error from error
 
     async def close(self) -> None:

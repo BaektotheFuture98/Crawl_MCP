@@ -6,7 +6,7 @@ import secrets
 from dataclasses import dataclass, field
 
 import uvicorn
-from fastapi import Cookie, FastAPI, Form, HTTPException
+from fastapi import Cookie, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 
 
@@ -77,6 +77,18 @@ def create_test_site(*, username: str = "test-user", password: str = "test-passw
             """<a href="/test-site/login?item=1">1</a>
             <a href="/test-site/login?item=2">2</a>
             <a href="/test-site/login?item=3">3</a>""",
+        )
+
+    @app.get("/test-site/cacheable", response_class=HTMLResponse)
+    async def cacheable(request: Request) -> Response:
+        etag = '"cache-v1"'
+        last_modified = "Mon, 10 Aug 2026 01:00:00 GMT"
+        headers = {"ETag": etag, "Last-Modified": last_modified}
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers=headers)
+        return HTMLResponse(
+            _page("캐시 페이지", "<article><h1>캐시 본문</h1></article>"),
+            headers=headers,
         )
 
     @app.post("/test-site/login", response_class=HTMLResponse)

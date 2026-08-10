@@ -27,8 +27,14 @@ async def test_server_registers_public_tools() -> None:
     tools = await server.list_tools()
 
     assert {tool.name for tool in tools} == {
+        "configure_crawl_target",
         "crawl_site",
+        "get_article",
+        "get_crawl_status",
+        "get_recent_article_changes",
+        "list_crawl_targets",
         "list_supported_sites",
+        "run_crawl_target",
         "scrape_page",
         "validate_session",
     }

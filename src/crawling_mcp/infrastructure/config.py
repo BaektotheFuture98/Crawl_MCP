@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,8 +13,17 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CRAWLING_MCP_", env_file=".env", extra="ignore")
 
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
-    repository: Literal["memory", "file"] = "file"
+    repository: Literal["memory", "file", "postgres"] = "file"
     data_dir: Path = Path("data")
+    postgres_dsn: str = Field(
+        default="postgresql+asyncpg://crawler:crawler@127.0.0.1:54329/crawling",
+        validation_alias=AliasChoices("CRAWLING_MCP_POSTGRES_DSN", "DATABASE_URL"),
+    )
+    worker_poll_interval_seconds: float = Field(default=5.0, gt=0, le=300)
+    worker_batch_size: int = Field(default=10, ge=1, le=100)
+    worker_lease_seconds: int = Field(default=600, ge=30, le=86_400)
+    worker_retry_base_seconds: int = Field(default=30, ge=1, le=3600)
+    worker_retry_max_seconds: int = Field(default=3600, ge=1, le=86_400)
     auth_profiles_path: Path = Path("config/auth_profiles.yaml")
     allow_private_networks: bool = False
     domain_allowlist: list[str] = Field(default_factory=list)

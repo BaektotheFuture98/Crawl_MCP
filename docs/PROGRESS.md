@@ -1,19 +1,19 @@
 # 개발 진행상황
 
-마지막 갱신: 2026-08-04 (Asia/Seoul)
+마지막 갱신: 2026-08-05 (Asia/Seoul)
 
 ## 저장소와 재개 위치
 
 - 원격 저장소: `https://github.com/BaektotheFuture98/Crawl_MCP.git`
-- 작업 브랜치: `feature/crawling-mcp`
-- 기준 브랜치: `main`
-- 작업 worktree: `/Users/seonminbaek/openup/mcp_crawl/python-crawling-mcp/.worktrees/crawling-mcp`
-- 이 문서 직전 구현 체크포인트: `642b7b9`
+- 현재 로컬 브랜치: `main`
+- 기본 작업 트리: `/Users/seonminbaek/openup/mcp_crawl/python-crawling-mcp`
+- feature 병합 체크포인트: `1e3222a`
+- 원격 복구 브랜치: `origin/feature/crawling-mcp`
 
 재개할 때 먼저 실행한다.
 
 ```bash
-cd /Users/seonminbaek/openup/mcp_crawl/python-crawling-mcp/.worktrees/crawling-mcp
+cd /Users/seonminbaek/openup/mcp_crawl/python-crawling-mcp
 git status --short --branch
 git log --oneline -15
 git fetch origin
@@ -63,7 +63,7 @@ d815863 fix(auth): serialize session refresh and preserve failures
 
 ## 최신 검증 결과
 
-2026-08-04에 아래 명령을 새로 실행했다.
+2026-08-05에 병합된 로컬 `main`에서 아래 명령을 새로 실행했다.
 
 ```text
 uv sync --locked: passed (Python 3.12.12, 77 packages audited)
@@ -104,15 +104,16 @@ SSRF, egress byte/deadline/handler cleanup을 포함한다.
 - proxy 종료 시 활성 handler 잔류: handler 추적·취소 후 listener 종료
 - 동시 실패 artifact 덮어쓰기: 최초 표준 경로와 이후 고유 failure 하위 경로 사용
 
-## 남은 절차
+## 통합 상태
 
 두 번째 독립 코드 리뷰에서 기존 4개 Important와 1개 Moderate가 모두 해결됐고,
-새 merge blocker가 없다는 판정을 받았다. 기능 구현과 로컬·Docker 검증은 완료 상태다.
-`main` 통합 방식 결정만 남아 있다.
+새 merge blocker가 없다는 판정을 받았다.
 
-1. 로컬 `main` 병합, Pull Request 생성, feature branch 유지 중 하나를 선택한다.
-2. 병합을 선택하면 병합된 `main`에서 전체 테스트를 다시 실행한다.
-3. 성공한 `main`을 `origin/main`에 push하고 최종 상태를 기록한다.
+- 2026-08-05 사용자가 로컬 `main` 병합을 선택했다.
+- `main`은 `14e8f15`에서 `1e3222a`로 fast-forward 병합됐다.
+- 병합된 `main`의 전체 로컬·Playwright·Docker 검증이 통과했다.
+- 선택한 방식에 따라 `origin/main`은 아직 생성하거나 push하지 않았다.
+- 구현 이력은 `origin/feature/crawling-mcp`에 보존되어 있다.
 
 ## 참고 문서
 

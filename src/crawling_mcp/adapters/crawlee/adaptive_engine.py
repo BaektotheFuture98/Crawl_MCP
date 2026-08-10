@@ -31,6 +31,8 @@ class AdaptiveCrawlerEngine:
 
     @staticmethod
     def _needs_browser(snapshot: PageSnapshot) -> bool:
+        if snapshot.not_modified or snapshot.status_code == 304:
+            return False
         soup = BeautifulSoup(snapshot.html, "lxml")
         for tag in soup.select("script, style, noscript"):
             tag.decompose()

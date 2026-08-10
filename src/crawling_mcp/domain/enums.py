@@ -11,6 +11,22 @@ class CrawlMode(StrEnum):
     BROWSER = "browser"
 
 
+class ChangeType(StrEnum):
+    """Stable content change outcomes."""
+
+    NEW = "NEW"
+    UPDATED = "UPDATED"
+    UNCHANGED = "UNCHANGED"
+
+
+class CrawlJobStatus(StrEnum):
+    """Lifecycle state for a persisted crawl job."""
+
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
 class PageType(StrEnum):
     """Router labels used during traversal."""
 

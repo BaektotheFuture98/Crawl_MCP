@@ -1,4 +1,37 @@
 services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: crawling
+      POSTGRES_USER: crawler
+      POSTGRES_PASSWORD: crawler
+    ports:
+      - "54329:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ./docker/postgres/init/001_article.sql:/docker-entrypoint-initdb.d/001_article.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crawler -d crawling"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build:
+      context: .
+    entrypoint: ["/app/.venv/bin/alembic", "upgrade", "head"]
+    env_file:
+      - path: .env.example
+        required: true
+      - path: .env
+        required: false
+    environment:
+      CRAWLING_MCP_REPOSITORY: postgres
+      CRAWLING_MCP_POSTGRES_DSN: postgresql+asyncpg://crawler:crawler@postgres:5432/crawling
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   mcp-server:
     build:
       context: .
@@ -8,13 +41,38 @@ services:
       - path: .env
         required: false
     environment:
+      CRAWLING_MCP_REPOSITORY: postgres
+      CRAWLING_MCP_POSTGRES_DSN: postgresql+asyncpg://crawler:crawler@postgres:5432/crawling
       CRAWLING_MCP_ALLOW_PRIVATE_NETWORKS: "false"
     stdin_open: true
     volumes:
       - auth-data:/app/data/auth
-      - results-data:/app/data/results
       - failures-data:/app/data/failures
       - screenshots-data:/app/data/screenshots
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  crawler-worker:
+    build:
+      context: .
+    entrypoint: ["/app/.venv/bin/python", "-m", "crawling_mcp.worker"]
+    env_file:
+      - path: .env.example
+        required: true
+      - path: .env
+        required: false
+    environment:
+      CRAWLING_MCP_REPOSITORY: postgres
+      CRAWLING_MCP_POSTGRES_DSN: postgresql+asyncpg://crawler:crawler@postgres:5432/crawling
+      CRAWLING_MCP_ALLOW_PRIVATE_NETWORKS: "false"
+    volumes:
+      - auth-data:/app/data/auth
+      - failures-data:/app/data/failures
+      - screenshots-data:/app/data/screenshots
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
 
   test-site:
     profiles: ["test"]
@@ -41,6 +99,6 @@ services:
 
 volumes:
   auth-data:
-  results-data:
   failures-data:
   screenshots-data:
+  postgres-data:

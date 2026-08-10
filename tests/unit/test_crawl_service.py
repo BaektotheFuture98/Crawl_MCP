@@ -12,6 +12,7 @@ from crawling_mcp.domain.enums import CrawlMode
 from crawling_mcp.domain.errors import CrawlLimitExceededError, NavigationError
 from crawling_mcp.domain.models import (
     CrawlContext,
+    CrawlExecution,
     CrawlLimits,
     CrawlRequest,
     CrawlResult,
@@ -65,6 +66,25 @@ class MultiItemEngine(FakeEngine):
                 PageItem(url=request.start_url, title="one"),
                 PageItem(url=request.start_url, title="two"),
             ],
+        )
+
+
+class ObservingEngine(FakeEngine):
+    async def crawl(self, request: CrawlRequest, context: CrawlContext) -> CrawlResult:
+        snapshot = PageSnapshot(
+            url=request.start_url,
+            html="<main>observed</main>",
+            headers={"etag": '"v1"'},
+        )
+        item = PageItem(url=request.start_url, title="Observed", content="body")
+        if context.page_handler is not None:
+            await context.page_handler(snapshot, [item])
+        return CrawlResult(
+            job_id=context.job_id,
+            start_url=request.start_url,
+            visited_pages=1,
+            succeeded_pages=1,
+            items=[item],
         )
 
 
@@ -197,3 +217,46 @@ async def test_crawl_site_deadline_includes_initial_validation_and_persists_time
     assert stored is not None
     assert stored.completed_at is not None
     assert stored.failed_pages == 1
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_delivers_internal_page_observations_without_changing_result() -> None:
+    observed: list[tuple[PageSnapshot, list[PageItem]]] = []
+
+    async def observe(snapshot: PageSnapshot, items: list[PageItem]) -> None:
+        observed.append((snapshot, items))
+
+    service = CrawlService(
+        validator=RecordingValidator(),
+        factory=FakeFactory(ObservingEngine()),
+        extractors=ExtractorRegistry(default=GenericExtractor()),
+        repository=InMemoryRepository(),
+    )
+
+    result = await service.crawl_site(
+        CrawlRequest(start_url="https://example.com"),
+        execution=CrawlExecution(page_handler=observe),
+    )
+
+    assert result.items[0].title == "Observed"
+    assert observed[0][0].headers == {"etag": '"v1"'}
+    assert observed[0][1] == result.items
+
+
+@pytest.mark.asyncio
+async def test_worker_execution_does_not_persist_generic_result_body() -> None:
+    repository = InMemoryRepository()
+    service = CrawlService(
+        validator=RecordingValidator(),
+        factory=FakeFactory(ObservingEngine()),
+        extractors=ExtractorRegistry(default=GenericExtractor()),
+        repository=repository,
+    )
+
+    result = await service.crawl_site(
+        CrawlRequest(start_url="https://example.com"),
+        execution=CrawlExecution(persist_result=False),
+    )
+
+    assert result.items[0].content == "body"
+    assert await repository.get_job(result.job_id) is None

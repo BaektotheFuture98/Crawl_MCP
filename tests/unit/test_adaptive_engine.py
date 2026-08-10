@@ -116,3 +116,24 @@ async def test_adaptive_site_crawl_checks_robots_before_http_probe() -> None:
     assert caught.value.details["reason"] == "robots_disallowed"
     assert http.scrape_calls == 0
     assert browser.crawl_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_adaptive_does_not_fallback_to_browser_for_not_modified_response() -> None:
+    http = FakeEngine(
+        PageSnapshot(
+            url="https://example.com",
+            html="",
+            status_code=304,
+            not_modified=True,
+        )
+    )
+    browser = FakeEngine(PageSnapshot(url="https://example.com", html="rendered"))
+    adaptive = AdaptiveCrawlerEngine(http=http, browser=browser)
+
+    snapshot = await adaptive.scrape(
+        ScrapePageRequest(url="https://example.com"), CrawlContext(domain="example.com")
+    )
+
+    assert snapshot.not_modified
+    assert browser.scrape_calls == 0
