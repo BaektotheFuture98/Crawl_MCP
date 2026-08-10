@@ -16,6 +16,8 @@ COPY src ./src
 RUN uv sync --frozen --no-dev --no-editable
 
 COPY config ./config
+COPY alembic.ini ./
+COPY alembic ./alembic
 COPY .env.example ./
 RUN mkdir -p data/auth data/results data/failures data/screenshots \
     && chown -R crawling:crawling /app
@@ -23,4 +25,3 @@ RUN mkdir -p data/auth data/results data/failures data/screenshots \
 USER crawling
 
 ENTRYPOINT ["/app/.venv/bin/python", "-m", "crawling_mcp"]
-

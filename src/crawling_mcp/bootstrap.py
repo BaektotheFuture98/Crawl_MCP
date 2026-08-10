@@ -108,7 +108,9 @@ class ApplicationContainer:
             await self.crawl_service.close()
         finally:
             try:
-                await self.monitoring_store.close()
+                monitoring_store = getattr(self, "monitoring_store", None)
+                if monitoring_store is not None:
+                    await monitoring_store.close()
             finally:
                 try:
                     await self.browser.close()
