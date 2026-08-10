@@ -5,40 +5,40 @@ from pathlib import Path
 from crawling_mcp.adapters.storage.postgres.schema import metadata
 
 
-def test_schema_contains_focused_monitoring_tables_and_indexes() -> None:
+def test_schema_keeps_exact_article_contract_and_only_three_state_tables() -> None:
     assert set(metadata.tables) == {
         "article",
-        "crawl_changes",
-        "crawl_failures",
-        "crawl_job_pages",
-        "crawl_jobs",
-        "crawl_snapshots",
-        "crawl_targets",
+        "article_crawl_state",
+        "crawl_run",
+        "crawl_target",
     }
-    targets = metadata.tables["crawl_targets"]
-    assert {"lease_owner", "lease_expires_at", "next_retry_at", "failure_count"} <= set(
-        targets.columns.keys()
-    )
-    assert metadata.tables["crawl_snapshots"].c.article_id.foreign_keys
-    assert metadata.tables["crawl_changes"].c.current_snapshot_id.foreign_keys
+    assert set(metadata.tables["article"].columns.keys()) == {
+        "id",
+        "ar_title",
+        "ar_content",
+        "reporter",
+        "publisher",
+        "url",
+        "published_at",
+    }
+    assert "ar_content" not in metadata.tables["article_crawl_state"].columns
 
 
-def test_migration_uses_database_uuidv7_and_has_reversible_tables() -> None:
-    migration = Path("alembic/versions/20260810_01_continuous_monitoring.py").read_text(
-        encoding="utf-8"
-    )
+def test_migration_validates_but_never_creates_or_drops_article() -> None:
+    migration = Path("alembic/versions/20260810_01_continuous_monitoring.py").read_text()
 
-    assert migration.count("uuidv7()") >= 4
-    assert "article" in migration
-    assert "crawl_targets" in migration
-    assert "crawl_snapshots" in migration
-    assert "crawl_changes" in migration
-    assert "def downgrade()" in migration
+    assert 'op.create_table(\n        "article"' not in migration
+    assert 'op.drop_table("article")' not in migration
+    assert "existing ARTICLE table is required" in migration
+    assert "duplicate URLs" in migration
+    assert 'op.create_table(\n        "crawl_target"' in migration
+    assert 'op.create_table(\n        "article_crawl_state"' in migration
+    assert 'op.create_table(\n        "crawl_run"' in migration
+    assert "crawl_snapshot" not in migration
     assert "minio" not in migration.lower()
 
 
-def test_database_generated_entities_have_uuidv7_defaults() -> None:
-    for table_name in ("article", "crawl_targets", "crawl_snapshots", "crawl_changes"):
+def test_only_crawler_owned_uuid_ids_have_database_defaults() -> None:
+    for table_name in ("article", "crawl_target", "crawl_run"):
         default = metadata.tables[table_name].c.id.server_default
-        assert default is not None
-        assert "uuidv7()" in str(default.arg)
+        assert default is not None and "uuidv7()" in str(default.arg)

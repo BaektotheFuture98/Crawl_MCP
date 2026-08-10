@@ -1,188 +1,93 @@
-# Continuous Monitoring Implementation Plan
+# Continuous Article Monitoring Implementation Plan
 
-> **For Codex:** REQUIRED SUB-SKILL: Use superpowers:test-driven-development for each behavior and superpowers:verification-before-completion before claiming success.
+**Goal:** Run periodic crawling in a Python Worker, extract site-aware article
+candidates, and keep only the latest article in the existing `ARTICLE` table while
+storing scheduling, state, and run metadata separately.
 
-**Goal:** Add a PostgreSQL-backed continuous crawling worker that calls `MonitoringService` and the existing `CrawlService` directly, stores only changed content versions, and exposes compact monitoring tools through MCP.
+**Architecture:** Preserve Ports & Adapters. Worker and MCP remain thin adapters;
+`MonitoringService` calls the existing `CrawlService`; `ArticleExtractor` converts
+raw page observations to `ArticleCandidate`; `ArticlePersistenceService` owns
+NEW/UPDATED/UNCHANGED decisions through focused repository ports.
 
-**Architecture:** Preserve the existing hexagonal dependency direction. Add pure monitoring domain types and change detection, focused monitoring repository ports plus a unit of work, PostgreSQL and in-memory adapters, a scheduler/runner adapter, and thin MCP query/command tools. Extend the internal crawl execution context for page observations and conditional HTTP without changing existing public crawl requests.
+## 1. Reconcile the generic crawl boundary
 
-**Tech Stack:** Python 3.12, Pydantic 2, asyncio, Crawlee 1.9, Playwright 1.62, SQLAlchemy 2 async, asyncpg, Alembic, PostgreSQL 18, FastMCP, structlog, pytest, ruff, mypy.
+- Remove article-only fields from `PageItem`.
+- Add an internal `persist_result` execution switch.
+- Preserve page observation and conditional HTTP hooks.
+- Test that Worker crawls do not persist generic result bodies while manual crawls
+  retain existing repository behavior.
 
----
+## 2. Add article domain and extraction
 
-## Task 1: Add PostgreSQL and migration dependencies
+- Add `ArticleCandidate`, `Article`, `ArticleCrawlState`, `ArticleChangeSummary`,
+  `CrawlRun`, and compact result DTOs.
+- Add deterministic URL/text/time canonicalization and article fingerprints.
+- Add `ArticleExtractor`/resolver ports, registry, and a structured-data adapter.
+- Test JSON-LD, OpenGraph, semantic HTML, canonical URL, reporter, publisher, and
+  publication time with HTML fixtures.
 
-**Files:**
-- Modify: `pyproject.toml`
-- Modify: `src/crawling_mcp/infrastructure/config.py`
-- Modify: `.env.example`
-- Test: `tests/unit/test_config.py`
-- Test: `tests/unit/test_packaging.py`
+## 3. Replace snapshot ports with article persistence ports
 
-1. Write failing tests for PostgreSQL repository settings, worker poll/lease/backoff settings, and required package data.
-2. Run the focused tests and confirm the expected failures.
-3. Add SQLAlchemy, asyncpg, and Alembic dependencies plus bounded settings.
-4. Refresh `uv.lock` and run the focused tests.
-5. Commit `build: add postgres worker dependencies`.
+- Keep `TargetRepository` and lease operations.
+- Add focused `ArticleRepository`, `ArticleCrawlStateRepository`, and
+  `CrawlRunRepository` protocols plus a monitoring UoW.
+- Implement concurrency-safe in-memory adapters for deterministic tests.
+- Test target CRUD/claims, article CRUD, state upsert/touch, and run queries.
 
-## Task 2: Add monitoring domain types and pure change detection
+## 4. Implement ArticlePersistenceService
 
-**Files:**
-- Create: `src/crawling_mcp/domain/monitoring.py`
-- Create: `src/crawling_mcp/domain/change_detector.py`
-- Modify: `src/crawling_mcp/domain/enums.py`
-- Modify: `src/crawling_mcp/domain/models.py`
-- Test: `tests/unit/test_change_detector.py`
-- Test: `tests/unit/test_monitoring_models.py`
+- Write tests for missing ARTICLE -> NEW, same fingerprint -> UNCHANGED, changed
+  fingerprint -> UPDATED, and baseline state for pre-existing ARTICLE rows.
+- Ensure inserts omit IDs, unchanged content never updates ARTICLE, and state keeps
+  the last meaningful change.
+- Add structured `article_created` and `article_updated` logs.
 
-1. Write tests for NEW, UPDATED, UNCHANGED, Unicode/whitespace canonicalization, tracking URL normalization, target due rules, and retry schedule.
-2. Run them and verify missing symbols fail.
-3. Implement compact immutable domain models and the pure detector.
-4. Run focused tests, ruff, and mypy for these files.
-5. Commit `feat(domain): model crawl monitoring changes`.
+## 5. Rework MonitoringService
 
-## Task 3: Add focused repository ports and in-memory adapters
+- Create the DB-owned `CRAWL_RUN` before crawling.
+- Load validators from article crawl state.
+- Run `CrawlService` with generic result persistence disabled.
+- Extract candidates per observed page and persist them through
+  `ArticlePersistenceService`.
+- Aggregate visited/new/updated/unchanged/failed counts and update run/target state.
+- Preserve due-only execution, leases, failure isolation, backoff, and timeouts.
 
-**Files:**
-- Create: `src/crawling_mcp/ports/monitoring.py`
-- Create: `src/crawling_mcp/adapters/storage/monitoring_memory.py`
-- Test: `tests/unit/test_monitoring_repositories.py`
+## 6. Implement non-destructive PostgreSQL storage
 
-1. Write contract tests for target CRUD, due claims, disabled filtering, lease reclaim, latest snapshots, last-seen updates, change ordering, and detail retrieval.
-2. Confirm contract tests fail before the adapters exist.
-3. Implement `TargetRepository`, `SnapshotRepository`, `ChangeRepository`, `MonitoringUnitOfWork`, and the concurrency-safe in-memory implementation.
-4. Run repository tests and strict typing.
-5. Commit `feat(storage): add monitoring repository ports`.
+- Define SQLAlchemy Core mappings for the existing exact `ARTICLE` columns and only
+  the three new tables.
+- Rewrite the initial Alembic migration to require/validate ARTICLE, never create or
+  drop it, check duplicate URLs before adding a unique index, and create/drop only
+  crawler-owned objects.
+- Implement async repositories with IDs omitted and `RETURNING` used for DB-owned
+  UUIDv7 values.
+- Run migration and repository integration tests against PostgreSQL 18.
 
-## Task 4: Add internal crawl observations and HTTP validators
+## 7. Rework compact MCP queries
 
-**Files:**
-- Modify: `src/crawling_mcp/domain/models.py`
-- Modify: `src/crawling_mcp/application/crawl_service.py`
-- Modify: `src/crawling_mcp/adapters/crawlee/http_engine.py`
-- Modify: `src/crawling_mcp/adapters/crawlee/browser_engine.py`
-- Modify: `src/crawling_mcp/adapters/crawlee/adaptive_engine.py`
-- Test: `tests/unit/test_crawl_service.py`
-- Test: `tests/unit/test_http_cache.py`
-- Test: `tests/unit/test_adaptive_engine.py`
+- Keep target configuration/list/manual-run/status commands high level.
+- Replace snapshot change/detail tools with `get_recent_article_changes` and
+  `get_article`.
+- Prove summaries exclude `ar_content` and full content appears only in explicit
+  article lookup.
 
-1. Write failing tests that a page observer receives snapshot/items, ETag and Last-Modified are captured, requests send conditional headers, known pages are seeded, and 304 skips extractor/browser fallback.
-2. Add excluded internal callback/cache fields to `CrawlContext` and an optional execution object to `CrawlService` while preserving existing call signatures.
-3. Populate response headers in both engines and implement HTTP 304 observations.
-4. Seed cached page requests with depth and validators; ensure AdaptiveCrawlerEngine treats 304 as final HTTP success.
-5. Run all crawl/engine tests and commit `feat(crawl): support monitoring observations and http validators`.
+## 8. Wire runtime and documentation
 
-## Task 5: Add PostgreSQL schema and Alembic migration
+- Register article extractors and services in `bootstrap.py`.
+- Keep one BrowserManager per MCP/Worker process.
+- Keep external `DATABASE_URL`/PostgreSQL environment configuration with no MinIO.
+- Keep Compose process separation; document external-PostgreSQL deployment as well
+  as the optional local PostgreSQL service.
+- Update README with architecture, schema, execution, Hermes flow, duplicate-body
+  prevention, and Kafka extension seams.
 
-**Files:**
-- Create: `alembic.ini`
-- Create: `alembic/env.py`
-- Create: `alembic/versions/20260810_01_continuous_monitoring.py`
-- Create: `src/crawling_mcp/adapters/storage/postgres/schema.py`
-- Test: `tests/unit/test_migrations.py`
+## 9. Verification and publication
 
-1. Write tests that inspect migration/schema text for all required tables, foreign keys, indexes, lease columns, UUIDv7 defaults, and no MinIO dependency.
-2. Confirm tests fail.
-3. Define SQLAlchemy Core metadata and Alembic upgrade/downgrade.
-4. Ensure article/target/snapshot/change INSERT identities are DB-generated.
-5. Run migration unit tests and commit `feat(storage): add continuous monitoring schema`.
-
-## Task 6: Implement PostgreSQL repositories
-
-**Files:**
-- Create: `src/crawling_mcp/adapters/storage/postgres/__init__.py`
-- Create: `src/crawling_mcp/adapters/storage/postgres/crawl_repository.py`
-- Create: `src/crawling_mcp/adapters/storage/postgres/target_repository.py`
-- Create: `src/crawling_mcp/adapters/storage/postgres/snapshot_repository.py`
-- Create: `src/crawling_mcp/adapters/storage/postgres/change_repository.py`
-- Create: `src/crawling_mcp/adapters/storage/postgres/unit_of_work.py`
-- Test: `tests/unit/test_postgres_repositories.py`
-- Test: `tests/integration/test_postgres_monitoring.py`
-
-1. Write SQL-level unit tests proving IDs are omitted, due claims use `FOR UPDATE SKIP LOCKED`, and repository responsibilities stay separated.
-2. Implement async SQLAlchemy repositories with a shared session factory and transactional unit of work.
-3. Add PostgreSQL integration contract tests for target CRUD/claim, content deduplication, snapshots, change detail, and rollback.
-4. Run unit tests; start PostgreSQL, migrate, and run integration tests.
-5. Commit `feat(storage): implement postgres monitoring repositories`.
-
-## Task 7: Implement MonitoringService
-
-**Files:**
-- Create: `src/crawling_mcp/application/monitoring_service.py`
-- Test: `tests/unit/test_monitoring_service.py`
-
-1. Write orchestration tests for first collection, unchanged collection, updated content, multi-page counts, 304 handling, disabled/not-due behavior, success scheduling, timeout/failure backoff, and failure isolation.
-2. Confirm failures before implementation.
-3. Implement `run_target` and `run_due_targets` using the CrawlRunner and monitoring unit-of-work ports.
-4. Add structured start/completion/failure/change logs and safe error storage.
-5. Run focused tests and commit `feat(application): add monitoring service`.
-
-## Task 8: Implement compact monitoring query/command services and MCP tools
-
-**Files:**
-- Create: `src/crawling_mcp/application/monitoring_query_service.py`
-- Modify: `src/crawling_mcp/adapters/mcp/tools.py`
-- Modify: `src/crawling_mcp/server.py`
-- Test: `tests/unit/test_monitoring_queries.py`
-- Test: `tests/unit/test_mcp_monitoring_tools.py`
-
-1. Write tests for target configuration/listing, status, manual run, bounded recent changes, and explicit detail lookup.
-2. Assert summary responses contain no `content` or raw metadata and enforce result limits.
-3. Implement application DTOs/services and six thin MCP tools.
-4. Extend transport validation without repository or crawler imports in the MCP adapter.
-5. Run MCP/query tests and commit `feat(mcp): expose compact monitoring tools`.
-
-## Task 9: Add worker scheduler, runner, and entrypoint
-
-**Files:**
-- Create: `src/crawling_mcp/adapters/worker/__init__.py`
-- Create: `src/crawling_mcp/adapters/worker/scheduler.py`
-- Create: `src/crawling_mcp/adapters/worker/runner.py`
-- Create: `src/crawling_mcp/worker.py`
-- Modify: `pyproject.toml`
-- Test: `tests/unit/test_worker.py`
-
-1. Write tests for due-only execution, disabled skipping, per-target failure isolation, stop-event polling, no MCP dependency, and graceful cancellation.
-2. Implement a clock-injectable scheduler and signal-aware runner.
-3. Expose `python -m crawling_mcp.worker` and `crawling-mcp-worker`.
-4. Run worker and packaging tests.
-5. Commit `feat(worker): run continuous crawl scheduler`.
-
-## Task 10: Wire process-specific containers and Docker Compose
-
-**Files:**
-- Modify: `src/crawling_mcp/bootstrap.py`
-- Modify: `docker-compose.yml`
-- Modify: `docker-compose.test.yml`
-- Modify: `Dockerfile`
-- Test: `tests/unit/test_bootstrap_monitoring.py`
-- Test: `tests/unit/test_compose.py`
-
-1. Write tests for memory/file compatibility, PostgreSQL MCP composition, Worker -> MonitoringService -> CrawlService wiring, one BrowserManager per process, migration ordering, and no MinIO service.
-2. Add shared component construction plus MCP/worker containers with correct lifecycle and repository ownership.
-3. Add PostgreSQL, migrate, MCP server, and crawler-worker services.
-4. Run bootstrap/Compose tests and Docker config validation.
-5. Commit `feat(runtime): wire postgres mcp and crawler worker`.
-
-## Task 11: Document operations and Hermes usage
-
-**Files:**
-- Modify: `README.md`
-- Modify: `.env.example`
-
-1. Document architecture, migrations, local/Compose commands, target configuration, worker lifecycle, schema, MCP tools, compact responses, Hermes call patterns, cost reduction, and future Kafka/distributed-worker seams.
-2. Validate documented commands and environment names against code.
-3. Run README/package smoke checks.
-4. Commit `docs: document continuous crawler operations`.
-
-## Task 12: Full verification and publication
-
-1. Run `uv run ruff check .`.
-2. Run `uv run ruff format --check .`.
-3. Run `uv run mypy src`.
-4. Run `uv run pytest`.
-5. Run PostgreSQL migration and repository integration tests.
-6. Run `docker compose config` and a worker/MCP startup smoke test.
-7. Inspect `git diff --check`, status, migration downgrade/upgrade, and ensure no secrets or user files were included.
-8. Use `superpowers:requesting-code-review`, address concrete findings, rerun all verification, then use `superpowers:finishing-a-development-branch`.
-9. Push `feat/continuous-monitoring` to GitHub and report commit, verification evidence, final architecture, Hermes usage, LLM savings, and Kafka/distributed-worker extension points.
+- Focused TDD loops for each behavior.
+- `uv run ruff check .`
+- `uv run ruff format --check .`
+- `uv run mypy src`
+- unit and full pytest
+- PostgreSQL migration upgrade/downgrade/upgrade and integration suite
+- Docker Compose config/startup smoke checks
+- diff/security/self-review, intentional commits, and push

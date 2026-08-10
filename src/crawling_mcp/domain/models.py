@@ -83,10 +83,6 @@ class PageItem(BaseModel):
     canonical_url: str | None = None
     language: str | None = None
     http_status_code: int | None = None
-    published_at: datetime | None = None
-    reporter: str | None = None
-    publisher: str | None = None
-    source: str | None = None
     collected_at: datetime = Field(default_factory=utc_now)
 
 
@@ -105,6 +101,7 @@ class CrawlExecution(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     job_id: UUID | None = None
+    persist_result: bool = True
     cache_entries: dict[str, CrawlCacheEntry] = Field(default_factory=dict)
     page_handler: Callable[[PageSnapshot, list[PageItem]], Awaitable[None]] | None = Field(
         default=None, exclude=True, repr=False

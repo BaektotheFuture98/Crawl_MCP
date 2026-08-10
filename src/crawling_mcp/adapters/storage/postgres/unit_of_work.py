@@ -4,44 +4,35 @@ from types import TracebackType
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from crawling_mcp.adapters.storage.postgres.change_repository import (
-    PostgresChangeRepository,
+from crawling_mcp.adapters.storage.postgres.article_repository import PostgresArticleRepository
+from crawling_mcp.adapters.storage.postgres.run_repository import PostgresCrawlRunRepository
+from crawling_mcp.adapters.storage.postgres.state_repository import (
+    PostgresArticleCrawlStateRepository,
 )
-from crawling_mcp.adapters.storage.postgres.job_repository import (
-    PostgresMonitoringJobRepository,
-)
-from crawling_mcp.adapters.storage.postgres.snapshot_repository import (
-    PostgresSnapshotRepository,
-)
-from crawling_mcp.adapters.storage.postgres.target_repository import (
-    PostgresTargetRepository,
-)
+from crawling_mcp.adapters.storage.postgres.target_repository import PostgresTargetRepository
 from crawling_mcp.ports.monitoring import (
-    ChangeRepository,
-    MonitoringJobRepository,
-    SnapshotRepository,
+    ArticleCrawlStateRepository,
+    ArticleRepository,
+    CrawlRunRepository,
     TargetRepository,
 )
 
 
 class PostgresMonitoringUnitOfWork:
-    """One async SQLAlchemy transaction spanning monitoring repositories."""
-
     def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
         self._sessions = sessions
         self._session: AsyncSession | None = None
         self.targets: TargetRepository
-        self.snapshots: SnapshotRepository
-        self.changes: ChangeRepository
-        self.jobs: MonitoringJobRepository
+        self.articles: ArticleRepository
+        self.states: ArticleCrawlStateRepository
+        self.runs: CrawlRunRepository
 
     async def __aenter__(self) -> PostgresMonitoringUnitOfWork:
-        session = self._sessions()
-        self._session = session
-        self.targets = PostgresTargetRepository(session)
-        self.snapshots = PostgresSnapshotRepository(session)
-        self.changes = PostgresChangeRepository(session)
-        self.jobs = PostgresMonitoringJobRepository(session)
+        self._session = self._sessions()
+        self.targets = PostgresTargetRepository(self._session)
+        self.articles = PostgresArticleRepository(self._session)
+        self.states = PostgresArticleCrawlStateRepository(self._session)
+        self.runs = PostgresCrawlRunRepository(self._session)
         return self
 
     async def __aexit__(
@@ -64,8 +55,6 @@ class PostgresMonitoringUnitOfWork:
 
 
 class PostgresMonitoringStore:
-    """Unit-of-work factory and lifecycle owner for monitoring persistence."""
-
     def __init__(self, engine: AsyncEngine) -> None:
         self._engine = engine
         self._sessions = async_sessionmaker(engine, expire_on_commit=False)

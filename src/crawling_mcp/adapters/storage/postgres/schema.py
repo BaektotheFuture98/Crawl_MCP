@@ -18,23 +18,21 @@ json_type = postgresql.JSONB()
 uuidv7_default = sa.text("uuidv7()")
 now_default = sa.text("CURRENT_TIMESTAMP")
 
+# Existing externally-owned final table. Alembic validates but never creates or drops it.
 article = sa.Table(
     "article",
     metadata,
     sa.Column("id", uuid_type, primary_key=True, server_default=uuidv7_default),
-    sa.Column("collected_at", sa.DateTime(timezone=True), nullable=False),
-    sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
-    sa.Column("title", sa.Text(), nullable=False),
-    sa.Column("content", sa.Text(), nullable=False),
-    sa.Column("source", sa.Text(), nullable=True),
-    sa.Column("url", sa.Text(), nullable=False),
-    sa.Column("content_hash", sa.String(64), nullable=False),
-    sa.UniqueConstraint("url", "content_hash", name="uq_article_url_content_hash"),
+    sa.Column("ar_title", sa.Text(), nullable=True),
+    sa.Column("ar_content", sa.Text(), nullable=True),
+    sa.Column("reporter", sa.String(100), nullable=True),
+    sa.Column("publisher", sa.String(100), nullable=True),
+    sa.Column("url", sa.Text(), nullable=True),
+    sa.Column("published_at", sa.DateTime(timezone=False), nullable=True),
 )
-sa.Index("ix_article_source_published_at", article.c.source, article.c.published_at)
 
-crawl_targets = sa.Table(
-    "crawl_targets",
+crawl_target = sa.Table(
+    "crawl_target",
     metadata,
     sa.Column("id", uuid_type, primary_key=True, server_default=uuidv7_default),
     sa.Column("url", sa.Text(), nullable=False, unique=True),
@@ -56,135 +54,65 @@ crawl_targets = sa.Table(
     sa.CheckConstraint("interval_seconds >= 10", name="interval_positive"),
 )
 sa.Index(
-    "ix_crawl_targets_due",
-    crawl_targets.c.enabled,
-    crawl_targets.c.next_retry_at,
-    crawl_targets.c.next_crawl_at,
+    "ix_crawl_target_due",
+    crawl_target.c.enabled,
+    crawl_target.c.next_retry_at,
+    crawl_target.c.next_crawl_at,
 )
 
-crawl_jobs = sa.Table(
-    "crawl_jobs",
+article_crawl_state = sa.Table(
+    "article_crawl_state",
     metadata,
-    sa.Column("id", uuid_type, primary_key=True),
-    sa.Column(
-        "target_id",
-        uuid_type,
-        sa.ForeignKey("crawl_targets.id", ondelete="SET NULL"),
-        nullable=True,
-    ),
-    sa.Column("start_url", sa.Text(), nullable=False),
-    sa.Column("status", sa.String(16), nullable=False, server_default="RUNNING"),
-    sa.Column("visited_pages", sa.Integer(), nullable=False, server_default="0"),
-    sa.Column("succeeded_pages", sa.Integer(), nullable=False, server_default="0"),
-    sa.Column("failed_pages", sa.Integer(), nullable=False, server_default="0"),
-    sa.Column("changed_pages", sa.Integer(), nullable=False, server_default="0"),
-    sa.Column("new_pages", sa.Integer(), nullable=False, server_default="0"),
-    sa.Column("updated_pages", sa.Integer(), nullable=False, server_default="0"),
-    sa.Column("unchanged_pages", sa.Integer(), nullable=False, server_default="0"),
-    sa.Column("error", sa.Text(), nullable=True),
-    sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
-    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
-)
-sa.Index("ix_crawl_jobs_target_started", crawl_jobs.c.target_id, crawl_jobs.c.started_at)
-
-crawl_job_pages = sa.Table(
-    "crawl_job_pages",
-    metadata,
-    sa.Column(
-        "crawl_job_id",
-        uuid_type,
-        sa.ForeignKey("crawl_jobs.id", ondelete="CASCADE"),
-        primary_key=True,
-    ),
     sa.Column(
         "article_id",
         uuid_type,
-        sa.ForeignKey("article.id", ondelete="RESTRICT"),
+        sa.ForeignKey("article.id", ondelete="CASCADE"),
         primary_key=True,
     ),
-    sa.Column("url", sa.Text(), nullable=False),
-    sa.Column("metadata", json_type, nullable=False, server_default=sa.text("'{}'::jsonb")),
-    sa.Column("collected_at", sa.DateTime(timezone=True), nullable=False),
-)
-
-crawl_failures = sa.Table(
-    "crawl_failures",
-    metadata,
-    sa.Column("id", uuid_type, primary_key=True, server_default=uuidv7_default),
-    sa.Column(
-        "crawl_job_id",
-        uuid_type,
-        sa.ForeignKey("crawl_jobs.id", ondelete="CASCADE"),
-        nullable=False,
-    ),
-    sa.Column("url", sa.Text(), nullable=False),
-    sa.Column("error_code", sa.String(64), nullable=False),
-    sa.Column("message", sa.Text(), nullable=False),
-    sa.Column("details", json_type, nullable=False, server_default=sa.text("'{}'::jsonb")),
-    sa.Column("artifacts", json_type, nullable=False, server_default=sa.text("'{}'::jsonb")),
-    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=now_default),
-)
-sa.Index("ix_crawl_failures_job", crawl_failures.c.crawl_job_id)
-
-crawl_snapshots = sa.Table(
-    "crawl_snapshots",
-    metadata,
-    sa.Column("id", uuid_type, primary_key=True, server_default=uuidv7_default),
     sa.Column(
         "target_id",
         uuid_type,
-        sa.ForeignKey("crawl_targets.id", ondelete="CASCADE"),
+        sa.ForeignKey("crawl_target.id", ondelete="CASCADE"),
         nullable=False,
     ),
-    sa.Column(
-        "article_id",
-        uuid_type,
-        sa.ForeignKey("article.id", ondelete="RESTRICT"),
-        nullable=False,
-    ),
-    sa.Column("url", sa.Text(), nullable=False),
+    sa.Column("url", sa.Text(), nullable=False, unique=True),
     sa.Column("content_hash", sa.String(64), nullable=False),
     sa.Column("etag", sa.Text(), nullable=True),
     sa.Column("last_modified", sa.Text(), nullable=True),
-    sa.Column("metadata", json_type, nullable=False, server_default=sa.text("'{}'::jsonb")),
-    sa.Column("depth", sa.Integer(), nullable=False, server_default="0"),
-    sa.Column("collected_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("first_seen_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("last_seen_at", sa.DateTime(timezone=True), nullable=False),
-    sa.UniqueConstraint("target_id", "url", "content_hash", name="uq_snapshot_version"),
+    sa.Column("last_changed_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("last_change_type", sa.String(16), nullable=True),
 )
 sa.Index(
-    "ix_crawl_snapshots_latest",
-    crawl_snapshots.c.target_id,
-    crawl_snapshots.c.url,
-    crawl_snapshots.c.collected_at,
+    "ix_article_crawl_state_recent",
+    article_crawl_state.c.last_changed_at,
+    article_crawl_state.c.last_change_type,
+)
+sa.Index(
+    "ix_article_crawl_state_target",
+    article_crawl_state.c.target_id,
+    article_crawl_state.c.last_seen_at,
 )
 
-crawl_changes = sa.Table(
-    "crawl_changes",
+crawl_run = sa.Table(
+    "crawl_run",
     metadata,
     sa.Column("id", uuid_type, primary_key=True, server_default=uuidv7_default),
     sa.Column(
         "target_id",
         uuid_type,
-        sa.ForeignKey("crawl_targets.id", ondelete="CASCADE"),
+        sa.ForeignKey("crawl_target.id", ondelete="CASCADE"),
         nullable=False,
     ),
-    sa.Column("change_type", sa.String(16), nullable=False),
-    sa.Column("url", sa.Text(), nullable=False),
-    sa.Column("title", sa.Text(), nullable=False, server_default=""),
-    sa.Column(
-        "previous_snapshot_id",
-        uuid_type,
-        sa.ForeignKey("crawl_snapshots.id", ondelete="SET NULL"),
-        nullable=True,
-    ),
-    sa.Column(
-        "current_snapshot_id",
-        uuid_type,
-        sa.ForeignKey("crawl_snapshots.id", ondelete="CASCADE"),
-        nullable=False,
-    ),
-    sa.Column("detected_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("status", sa.String(16), nullable=False),
+    sa.Column("visited_pages", sa.Integer(), nullable=False, server_default="0"),
+    sa.Column("new_articles", sa.Integer(), nullable=False, server_default="0"),
+    sa.Column("updated_articles", sa.Integer(), nullable=False, server_default="0"),
+    sa.Column("unchanged_articles", sa.Integer(), nullable=False, server_default="0"),
+    sa.Column("failed_pages", sa.Integer(), nullable=False, server_default="0"),
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("error", sa.Text(), nullable=True),
 )
-sa.Index("ix_crawl_changes_recent", crawl_changes.c.detected_at)
-sa.Index("ix_crawl_changes_target_recent", crawl_changes.c.target_id, crawl_changes.c.detected_at)
+sa.Index("ix_crawl_run_target_started", crawl_run.c.target_id, crawl_run.c.started_at)

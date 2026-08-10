@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,7 +15,10 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     repository: Literal["memory", "file", "postgres"] = "file"
     data_dir: Path = Path("data")
-    postgres_dsn: str = "postgresql+asyncpg://crawler:crawler@127.0.0.1:54329/crawling"
+    postgres_dsn: str = Field(
+        default="postgresql+asyncpg://crawler:crawler@127.0.0.1:54329/crawling",
+        validation_alias=AliasChoices("CRAWLING_MCP_POSTGRES_DSN", "DATABASE_URL"),
+    )
     worker_poll_interval_seconds: float = Field(default=5.0, gt=0, le=300)
     worker_batch_size: int = Field(default=10, ge=1, le=100)
     worker_lease_seconds: int = Field(default=600, ge=30, le=86_400)

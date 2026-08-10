@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from crawling_mcp.infrastructure.config import Settings
 
 
@@ -18,3 +20,11 @@ def test_postgres_repository_is_supported() -> None:
     settings = Settings(_env_file=None, repository="postgres")
 
     assert settings.repository == "postgres"
+
+
+def test_database_url_alias_configures_existing_postgres(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://app:secret@db.example/news")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.postgres_dsn == "postgresql+asyncpg://app:secret@db.example/news"

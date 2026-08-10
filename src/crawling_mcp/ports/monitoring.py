@@ -6,13 +6,17 @@ from types import TracebackType
 from typing import Protocol
 from uuid import UUID
 
+from crawling_mcp.domain.articles import (
+    Article,
+    ArticleCandidate,
+    ArticleChangeSummary,
+    ArticleCrawlState,
+    ArticleCrawlStateCreate,
+)
 from crawling_mcp.domain.models import CrawlExecution, CrawlRequest, CrawlResult
 from crawling_mcp.domain.monitoring import (
-    CrawlChange,
-    CrawlChangeCreate,
-    CrawlJobSummary,
-    CrawlSnapshot,
-    CrawlSnapshotCreate,
+    CrawlRun,
+    CrawlRunCreate,
     CrawlTarget,
     CrawlTargetCreate,
     MonitoringRunResult,
@@ -20,24 +24,18 @@ from crawling_mcp.domain.monitoring import (
 
 
 class CrawlRunner(Protocol):
-    """Application-facing crawl use case reused by the monitoring service."""
-
     async def crawl_site(
         self, request: CrawlRequest, *, execution: CrawlExecution | None = None
     ) -> CrawlResult: ...
 
 
 class TargetRunner(Protocol):
-    """Manual target execution surface used by monitoring commands."""
-
     async def run_target(
         self, target_id: UUID, *, force: bool = False
     ) -> MonitoringRunResult | None: ...
 
 
 class TargetRepository(Protocol):
-    """Persistence boundary for monitoring configuration and scheduler state."""
-
     async def create(self, target: CrawlTargetCreate) -> CrawlTarget: ...
 
     async def get(self, target_id: UUID) -> CrawlTarget | None: ...
@@ -57,6 +55,16 @@ class TargetRepository(Protocol):
         lease_seconds: int,
     ) -> builtins.list[CrawlTarget]: ...
 
+    async def claim(
+        self,
+        target_id: UUID,
+        *,
+        now: datetime,
+        lease_owner: str,
+        lease_seconds: int,
+        force: bool,
+    ) -> CrawlTarget | None: ...
+
     async def mark_succeeded(
         self, target_id: UUID, *, crawled_at: datetime, next_crawl_at: datetime
     ) -> None: ...
@@ -71,56 +79,45 @@ class TargetRepository(Protocol):
     ) -> None: ...
 
 
-class SnapshotRepository(Protocol):
-    """Persistence boundary for changed content versions."""
+class ArticleRepository(Protocol):
+    async def find_by_url(self, url: str) -> Article | None: ...
 
-    async def create(self, snapshot: CrawlSnapshotCreate) -> CrawlSnapshot: ...
+    async def get_by_id(self, article_id: UUID) -> Article | None: ...
 
-    async def get(self, snapshot_id: UUID) -> CrawlSnapshot | None: ...
+    async def insert(self, candidate: ArticleCandidate) -> Article: ...
 
-    async def latest_by_target(self, target_id: UUID) -> dict[str, CrawlSnapshot]: ...
-
-    async def list_versions(
-        self, target_id: UUID, url: str
-    ) -> builtins.list[CrawlSnapshot]: ...
-
-    async def touch(
-        self,
-        snapshot_id: UUID,
-        *,
-        seen_at: datetime,
-        etag: str | None,
-        last_modified: str | None,
-    ) -> None: ...
+    async def update(self, article_id: UUID, candidate: ArticleCandidate) -> Article: ...
 
 
-class ChangeRepository(Protocol):
-    """Persistence boundary for meaningful change events."""
+class ArticleCrawlStateRepository(Protocol):
+    async def find_by_url(self, url: str) -> ArticleCrawlState | None: ...
 
-    async def create(self, change: CrawlChangeCreate) -> CrawlChange: ...
+    async def list_by_target(self, target_id: UUID) -> builtins.list[ArticleCrawlState]: ...
 
-    async def recent(
+    async def create(self, state: ArticleCrawlStateCreate) -> ArticleCrawlState: ...
+
+    async def save(self, state: ArticleCrawlState) -> ArticleCrawlState: ...
+
+    async def recent_changes(
         self, *, target_id: UUID | None = None, limit: int = 50
-    ) -> builtins.list[CrawlChange]: ...
-
-    async def detail(self, change_id: UUID) -> tuple[CrawlChange, CrawlSnapshot] | None: ...
+    ) -> builtins.list[ArticleChangeSummary]: ...
 
 
-class MonitoringJobRepository(Protocol):
-    """Persistence boundary for compact worker job status."""
+class CrawlRunRepository(Protocol):
+    async def create(self, run: CrawlRunCreate) -> CrawlRun: ...
 
-    async def save(self, job: CrawlJobSummary) -> None: ...
+    async def save(self, run: CrawlRun) -> CrawlRun: ...
 
-    async def latest(self, target_id: UUID) -> CrawlJobSummary | None: ...
+    async def latest(
+        self, *, target_id: UUID | None = None, limit: int = 50
+    ) -> builtins.list[CrawlRun]: ...
 
 
 class MonitoringUnitOfWork(Protocol):
-    """Transaction boundary spanning monitoring repositories."""
-
     targets: TargetRepository
-    snapshots: SnapshotRepository
-    changes: ChangeRepository
-    jobs: MonitoringJobRepository
+    articles: ArticleRepository
+    states: ArticleCrawlStateRepository
+    runs: CrawlRunRepository
 
     async def __aenter__(self) -> MonitoringUnitOfWork: ...
 
@@ -135,6 +132,4 @@ class MonitoringUnitOfWork(Protocol):
 
 
 class MonitoringUnitOfWorkFactory(Protocol):
-    """Create an isolated monitoring transaction."""
-
     def __call__(self) -> MonitoringUnitOfWork: ...

@@ -7,6 +7,7 @@ import structlog
 from mcp.server.fastmcp import FastMCP
 from pydantic import ValidationError
 
+from crawling_mcp.domain.articles import Article, ArticleChangeSummary
 from crawling_mcp.domain.enums import CrawlMode
 from crawling_mcp.domain.errors import (
     CrawlError,
@@ -23,9 +24,7 @@ from crawling_mcp.domain.models import (
 )
 from crawling_mcp.domain.monitoring import (
     ConfigureTargetRequest,
-    CrawlChange,
-    CrawlChangeDetail,
-    CrawlJobSummary,
+    CrawlRun,
     CrawlTarget,
     MonitoringRunResult,
 )
@@ -51,15 +50,13 @@ class McpApplication(Protocol):
 
     async def run_crawl_target(self, target_id: UUID) -> MonitoringRunResult: ...
 
-    async def get_crawl_status(
-        self, *, target_id: UUID | None, limit: int
-    ) -> list[CrawlJobSummary]: ...
+    async def get_crawl_status(self, *, target_id: UUID | None, limit: int) -> list[CrawlRun]: ...
 
-    async def get_recent_changes(
+    async def get_recent_article_changes(
         self, *, target_id: UUID | None, limit: int
-    ) -> list[CrawlChange]: ...
+    ) -> list[ArticleChangeSummary]: ...
 
-    async def get_change_detail(self, change_id: UUID) -> CrawlChangeDetail | None: ...
+    async def get_article(self, article_id: UUID) -> Article | None: ...
 
 
 def _error_payload(error: CrawlError) -> dict[str, Any]:
@@ -270,17 +267,19 @@ def register_tools(server: FastMCP, application: McpApplication) -> None:
             return _error_payload(NavigationError(reason="internal_error"))
 
     @server.tool()
-    async def get_recent_changes(
+    async def get_recent_article_changes(
         target_id: str | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
-        """Return bounded NEW/UPDATED summaries without article content."""
+        """Return bounded NEW/UPDATED article summaries without article content."""
         try:
             parsed_id = UUID(target_id) if target_id else None
-            changes = await application.get_recent_changes(target_id=parsed_id, limit=limit)
+            changes = await application.get_recent_article_changes(target_id=parsed_id, limit=limit)
             return {
                 "count": len(changes),
-                "changes": [change.model_dump(mode="json") for change in changes],
+                "new": sum(change.change_type.value == "NEW" for change in changes),
+                "updated": sum(change.change_type.value == "UPDATED" for change in changes),
+                "articles": [change.model_dump(mode="json") for change in changes],
             }
         except ValueError:
             return _error_payload(InvalidUrlError(reason="invalid_target_id"))
@@ -289,15 +288,25 @@ def register_tools(server: FastMCP, application: McpApplication) -> None:
             return _error_payload(NavigationError(reason="internal_error"))
 
     @server.tool()
-    async def get_change_detail(change_id: str) -> dict[str, Any]:
-        """Return article content only for one explicitly selected change."""
+    async def get_article(article_id: str) -> dict[str, Any]:
+        """Return full content only for one explicitly selected article."""
         try:
-            detail = await application.get_change_detail(UUID(change_id))
-            if detail is None:
-                return _error_payload(InvalidUrlError(reason="change_not_found"))
-            return detail.model_dump(mode="json")
+            article = await application.get_article(UUID(article_id))
+            if article is None:
+                return _error_payload(InvalidUrlError(reason="article_not_found"))
+            return {
+                "id": str(article.id),
+                "ar_title": article.title,
+                "ar_content": article.content,
+                "reporter": article.reporter,
+                "publisher": article.publisher,
+                "url": article.url,
+                "published_at": (
+                    article.published_at.isoformat() if article.published_at else None
+                ),
+            }
         except ValueError:
-            return _error_payload(InvalidUrlError(reason="invalid_change_id"))
+            return _error_payload(InvalidUrlError(reason="invalid_article_id"))
         except Exception as error:
-            logger.error("unexpected_change_detail_tool_error", error_type=type(error).__name__)
+            logger.error("unexpected_article_tool_error", error_type=type(error).__name__)
             return _error_payload(NavigationError(reason="internal_error"))

@@ -104,8 +104,7 @@ class HttpCrawlerEngine:
             html=html,
             status_code=context.http_response.status_code,
             headers={
-                str(key).lower(): str(value)
-                for key, value in context.http_response.headers.items()
+                str(key).lower(): str(value) for key, value in context.http_response.headers.items()
             },
             links=links,
             depth=depth,
@@ -122,7 +121,9 @@ class HttpCrawlerEngine:
     ) -> Request:
         """Build one request with validators from the previous page version."""
         headers: dict[str, str] = {}
-        cached = context.cache_entries.get(url)
+        cached = context.cache_entries.get(url) or context.cache_entries.get(
+            normalize_url(url, remove_tracking=True)
+        )
         if cached is not None:
             if cached.etag:
                 headers["If-None-Match"] = cached.etag

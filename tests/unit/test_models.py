@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from crawling_mcp.domain.enums import CrawlMode
-from crawling_mcp.domain.models import CrawlRequest
+from crawling_mcp.domain.models import CrawlRequest, PageItem
 
 
 def test_crawl_request_uses_conservative_defaults() -> None:
@@ -42,3 +42,7 @@ def test_crawl_request_does_not_share_pattern_lists() -> None:
     first.include_patterns.append("/docs/*")
 
     assert second.include_patterns == []
+
+
+def test_page_item_remains_generic_and_has_no_article_fields() -> None:
+    assert {"reporter", "publisher", "published_at", "source"}.isdisjoint(PageItem.model_fields)

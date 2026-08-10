@@ -241,3 +241,22 @@ async def test_crawl_site_delivers_internal_page_observations_without_changing_r
     assert result.items[0].title == "Observed"
     assert observed[0][0].headers == {"etag": '"v1"'}
     assert observed[0][1] == result.items
+
+
+@pytest.mark.asyncio
+async def test_worker_execution_does_not_persist_generic_result_body() -> None:
+    repository = InMemoryRepository()
+    service = CrawlService(
+        validator=RecordingValidator(),
+        factory=FakeFactory(ObservingEngine()),
+        extractors=ExtractorRegistry(default=GenericExtractor()),
+        repository=repository,
+    )
+
+    result = await service.crawl_site(
+        CrawlRequest(start_url="https://example.com"),
+        execution=CrawlExecution(persist_result=False),
+    )
+
+    assert result.items[0].content == "body"
+    assert await repository.get_job(result.job_id) is None

@@ -1,6 +1,5 @@
 """Async PostgreSQL storage adapters."""
 
-from crawling_mcp.adapters.storage.postgres.crawl_repository import PostgresCrawlRepository
 from crawling_mcp.adapters.storage.postgres.unit_of_work import PostgresMonitoringStore
 
-__all__ = ["PostgresCrawlRepository", "PostgresMonitoringStore"]
+__all__ = ["PostgresMonitoringStore"]

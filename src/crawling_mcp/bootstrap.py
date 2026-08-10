@@ -5,6 +5,10 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from crawling_mcp.adapters.article_extractors import (
+    ArticleExtractorRegistry,
+    StructuredArticleExtractor,
+)
 from crawling_mcp.adapters.auth.example_login import ExampleLoginAdapter
 from crawling_mcp.adapters.auth.no_auth import NoAuthAdapter
 from crawling_mcp.adapters.auth.registry import AuthRegistry
@@ -24,11 +28,13 @@ from crawling_mcp.adapters.extractors.registry import ExtractorRegistry
 from crawling_mcp.adapters.storage.file_repository import FileRepository
 from crawling_mcp.adapters.storage.memory_repository import InMemoryRepository
 from crawling_mcp.adapters.storage.monitoring_memory import InMemoryMonitoringStore
-from crawling_mcp.adapters.storage.postgres import PostgresCrawlRepository, PostgresMonitoringStore
+from crawling_mcp.adapters.storage.postgres import PostgresMonitoringStore
+from crawling_mcp.application.article_persistence_service import ArticlePersistenceService
 from crawling_mcp.application.auth_service import AuthService
 from crawling_mcp.application.crawl_service import CrawlService
 from crawling_mcp.application.monitoring_query_service import MonitoringQueryService
 from crawling_mcp.application.monitoring_service import MonitoringService
+from crawling_mcp.domain.articles import Article, ArticleChangeSummary
 from crawling_mcp.domain.models import (
     CrawlLimits,
     CrawlRequest,
@@ -39,9 +45,7 @@ from crawling_mcp.domain.models import (
 )
 from crawling_mcp.domain.monitoring import (
     ConfigureTargetRequest,
-    CrawlChange,
-    CrawlChangeDetail,
-    CrawlJobSummary,
+    CrawlRun,
     CrawlTarget,
     MonitoringRunResult,
 )
@@ -72,6 +76,7 @@ class ApplicationContainer:
         browser: BrowserManager,
         auth_registry: AuthRegistry,
         extractor_registry: ExtractorRegistry,
+        article_extractor_registry: ArticleExtractorRegistry,
         auth_service: AuthService,
         crawl_service: CrawlService,
         monitoring_store: MonitoringStore,
@@ -83,6 +88,7 @@ class ApplicationContainer:
         self.browser = browser
         self.auth_registry = auth_registry
         self.extractor_registry = extractor_registry
+        self.article_extractor_registry = article_extractor_registry
         self.auth_service = auth_service
         self.crawl_service = crawl_service
         self.monitoring_store = monitoring_store
@@ -152,20 +158,20 @@ class ApplicationContainer:
     async def run_crawl_target(self, target_id: UUID) -> MonitoringRunResult:
         return await self.monitoring_query_service.run_target(target_id)
 
-    async def get_crawl_status(
-        self, *, target_id: UUID | None, limit: int
-    ) -> list[CrawlJobSummary]:
+    async def get_crawl_status(self, *, target_id: UUID | None, limit: int) -> list[CrawlRun]:
         return await self.monitoring_query_service.get_crawl_status(
             target_id=target_id, limit=limit
         )
 
-    async def get_recent_changes(self, *, target_id: UUID | None, limit: int) -> list[CrawlChange]:
-        return await self.monitoring_query_service.get_recent_changes(
+    async def get_recent_article_changes(
+        self, *, target_id: UUID | None, limit: int
+    ) -> list[ArticleChangeSummary]:
+        return await self.monitoring_query_service.get_recent_article_changes(
             target_id=target_id, limit=limit
         )
 
-    async def get_change_detail(self, change_id: UUID) -> CrawlChangeDetail | None:
-        return await self.monitoring_query_service.get_change_detail(change_id)
+    async def get_article(self, article_id: UUID) -> Article | None:
+        return await self.monitoring_query_service.get_article(article_id)
 
 
 def build_container(settings: Settings | None = None) -> ApplicationContainer:
@@ -183,6 +189,7 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
         max_upstream_bytes=configured.max_egress_bytes_per_connection,
     )
     extractors = ExtractorRegistry(default=GenericExtractor())
+    article_extractors = ArticleExtractorRegistry(default=StructuredArticleExtractor())
     navigation = NavigationRegistry()
     auth_registry = AuthRegistry(default=NoAuthAdapter())
     profiles = AuthProfileStore.from_yaml(configured.auth_profiles_path)
@@ -201,7 +208,7 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
         monitoring_store = cast(MonitoringStore, InMemoryMonitoringStore())
     elif configured.repository == "postgres":
         engine = create_async_engine(configured.postgres_dsn)
-        repository = PostgresCrawlRepository(engine, dispose_engine=False)
+        repository = InMemoryRepository()
         monitoring_store = cast(MonitoringStore, PostgresMonitoringStore(engine))
     else:
         repository = FileRepository(configured.data_dir / "results")
@@ -261,11 +268,15 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
             max_concurrency=configured.max_concurrency_limit,
         ),
     )
+    article_persistence = ArticlePersistenceService(uow_factory=monitoring_store)
     monitoring_service = MonitoringService(
         crawler=crawl_service,
+        article_extractors=article_extractors,
+        article_persistence=article_persistence,
         uow_factory=monitoring_store,
         retry_base_seconds=configured.worker_retry_base_seconds,
         retry_max_seconds=configured.worker_retry_max_seconds,
+        lease_seconds=configured.worker_lease_seconds,
     )
     monitoring_query_service = MonitoringQueryService(
         uow_factory=monitoring_store,
@@ -277,6 +288,7 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
         browser=browser,
         auth_registry=auth_registry,
         extractor_registry=extractors,
+        article_extractor_registry=article_extractors,
         auth_service=auth_service,
         crawl_service=crawl_service,
         monitoring_store=monitoring_store,

@@ -1,171 +1,149 @@
-# Continuous Monitoring Architecture Design
+# Continuous Article Monitoring Architecture Design
 
 ## Goal
 
 Move periodic crawling out of Hermes and into a long-running Python worker while
-preserving the existing hexagonal architecture. Hermes and MCP remain on-demand
-interfaces for target management, status, change summaries, and detail retrieval.
+preserving the existing hexagonal architecture. `ARTICLE` remains the sole final
+article store. Crawler state and run metadata live in separate PostgreSQL tables.
 
-## Existing architecture
-
-The current dependency direction is retained:
+## Architecture
 
 ```text
-FastMCP adapter -> CrawlService/AuthService -> Protocol ports -> adapters
-```
-
-`CrawlService` owns validation, authentication, engine selection, extraction, and
-job persistence. `AdaptiveCrawlerEngine` tries HTTP before the shared Playwright
-browser. `ApplicationContainer` owns the egress proxy and browser lifecycle. MCP
-tools contain transport validation and serialization only.
-
-## Target architecture
-
-```text
-Hermes -> MCP query/command tools -> monitoring application services -> PostgreSQL
+Hermes -> MCP adapter -> MonitoringQueryService -> repository ports -> PostgreSQL
 
 Worker adapter -> MonitoringService -> CrawlService -> AdaptiveCrawlerEngine
                                       -> HTTP / shared Playwright browser
-                                      -> Website
-MonitoringService -> ChangeDetector -> monitoring unit of work -> PostgreSQL
+               -> ArticleExtractor -> ArticleCandidate
+               -> ArticlePersistenceService -> repository ports -> PostgreSQL
 ```
 
-The worker never calls MCP. MCP never calls Crawlee, Playwright, or a repository
-directly.
+MCP and Worker adapters never call Crawlee, Playwright, or SQL directly. The Worker
+calls application services directly and never calls MCP. `CrawlService` stays
+reusable by MCP, CLI, and Worker. HTTP-first fallback and the process-scoped
+`BrowserManager` lifecycle remain unchanged.
 
-## Domain model
+## Article boundary
 
-### CrawlTarget
+`PageItem` stays engine-neutral and generic. Article-specific fields are not added
+to it. Monitoring observes the raw `PageSnapshot` through the internal
+`CrawlExecution` hook and passes it to a separately registered `ArticleExtractor`.
 
-Stores the monitoring contract and scheduler state:
+`ArticleCandidate` contains the canonical article URL, title, body, reporter,
+publisher, and publication time. The default structured-data adapter uses this
+priority order:
 
-- database-generated UUIDv7 identifier
-- URL, interval, enabled state, crawl mode, optional auth profile
-- bounded crawl options: max pages/depth, timeouts, retries, concurrency, robots,
-  delay, URL patterns, domain and tracking policies
-- last/next crawl timestamps
-- failure count, last error/failed timestamp, next retry timestamp
-- lease owner and lease expiry for duplicate-run prevention
-- created/updated timestamps
+1. schema.org `Article`/`NewsArticle` JSON-LD
+2. OpenGraph/article metadata
+3. semantic `<article>`, heading, author, and `<time>` elements
 
-### CrawlSnapshot
+Site-specific CSS selectors belong in article extractor adapters, never in
+`GenericExtractor`, the domain, or application services. Pages without a credible
+title and body produce no candidate.
 
-A snapshot is a changed content version for one target/page URL. It references an
-article row that owns the extracted body and stores content hash, ETag,
-Last-Modified, stable metadata, depth, collected time, and last-seen time.
-Unchanged checks update `last_seen_at` and do not duplicate the body.
+## Change detection and persistence
 
-### CrawlChange
+`ArticleChangeDetector` canonicalizes the candidate before SHA-256 hashing:
 
-Stores only meaningful `NEW` and `UPDATED` events and references the previous and
-current snapshots. `UNCHANGED` remains a detector outcome and job counter rather
-than an append-only event. `DELETED` is intentionally deferred because a bounded
-or partially failed crawl cannot distinguish deletion from an unvisited page.
+- normalized canonical URL with fragments and tracking parameters removed
+- Unicode NFKC normalization and collapsed whitespace
+- title, body, reporter, publisher, and normalized publication timestamp
 
-### ChangeDetector
+`ArticlePersistenceService` loads the current article and crawl state by canonical
+URL and performs one atomic outcome:
 
-Canonicalizes extracted `PageItem` values before SHA-256 hashing:
+- `NEW`: `ARTICLE` does not exist; insert it and create state.
+- `UPDATED`: fingerprint differs; update `ARTICLE` and meaningful-change state.
+- `UNCHANGED`: do not update `ARTICLE`; only touch state last-seen and validators.
 
-- normalize the effective canonical URL and remove tracking parameters
-- Unicode NFKC-normalize title and content
-- collapse whitespace
-- include stable title/content identity
-- exclude collection time, response status, and arbitrary volatile metadata
+If an article predates monitoring state, its current row is fingerprinted first.
+Matching content creates baseline state without reporting a new change; different
+content is `UPDATED`. `UNCHANGED` never overwrites the last meaningful change type
+or timestamp.
 
-Outcomes are `NEW`, `UPDATED`, and `UNCHANGED`.
+## Existing ARTICLE contract
 
-## Application services
+The migration requires and validates this existing table, and never creates,
+drops, or recreates it:
 
-### MonitoringService
+```sql
+CREATE TABLE ARTICLE (
+    id UUID PRIMARY KEY DEFAULT uuidv7(),
+    ar_title TEXT,
+    ar_content TEXT,
+    reporter VARCHAR(100),
+    publisher VARCHAR(100),
+    url TEXT,
+    published_at TIMESTAMP
+);
+```
 
-`run_target` loads current snapshots, supplies HTTP validators to `CrawlService`,
-observes extracted pages without changing the public MCP crawl response, detects
-changes, atomically stores snapshots/events, and updates target/job state.
+The migration adds a unique URL index only after checking for duplicate non-null
+URLs. It fails with an actionable error instead of deleting ambiguous existing
+rows. All application inserts omit `id`; PostgreSQL `uuidv7()` owns identity.
 
-`run_due_targets` claims due targets through the target repository and isolates
-per-target failures so one timeout cannot terminate the worker loop.
+## Added tables
 
-### MonitoringQueryService
+- `CRAWL_TARGET`: schedule, bounded crawl configuration, retry state, and lease.
+- `ARTICLE_CRAWL_STATE`: article/target relation, canonical URL, content hash,
+  ETag, Last-Modified, first/last seen, and last meaningful change.
+- `CRAWL_RUN`: one Worker execution with status, timing, and compact counters.
 
-Provides bounded target, status, recent-change, and change-detail DTOs to MCP.
-Summary methods never include article content. Only detail lookup includes content.
+There are no snapshot, article-history, raw-article, change-event, job-page, or
+object-storage tables. Recent changes are queried from the latest meaningful
+change fields in `ARTICLE_CRAWL_STATE` joined to `ARTICLE`.
 
-## Ports and persistence
+## Crawl result persistence
 
-Keep `CrawlRepository` for crawl-job persistence and add focused protocols:
+The existing `FileRepository` remains the default for manual MCP/CLI crawls.
+Worker executions set `CrawlExecution.persist_result=False`, so the same article
+body is not written to `data/results`. PostgreSQL runtime uses an in-memory generic
+crawl repository for manual transport compatibility; final monitored articles are
+written only through `ArticlePersistenceService`.
 
-- `TargetRepository`
-- `SnapshotRepository`
-- `ChangeRepository`
-- `MonitoringUnitOfWork`
+Failure diagnostic artifacts remain allowed and contain operational diagnostics,
+not a second permanent article corpus.
 
-PostgreSQL implementations are separate classes sharing a SQLAlchemy async session
-and unit of work. In-memory implementations support deterministic unit tests.
+## Conditional HTTP
 
-PostgreSQL uses SQLAlchemy Async, asyncpg, and Alembic. PostgreSQL INSERT statements
-for article, target, snapshot, and change IDs omit the ID and use
-`DEFAULT uuidv7()` with `RETURNING id`. No MinIO dependency is introduced.
+ETag and Last-Modified values are stored in `ARTICLE_CRAWL_STATE` and passed into
+the internal crawl context. The HTTP adapter emits `If-None-Match` and
+`If-Modified-Since`. A 304 response bypasses parsing, article extraction, hashing,
+and browser fallback, and only touches state last-seen/validators.
 
-## Database schema
+## Scheduling and failure behavior
 
-- `article`: collected/published time, title, content, source, URL, content hash;
-  unique URL/hash content versions
-- `crawl_jobs`: target link, state, counts, timing, and safe failure summary
-- `crawl_job_pages`: small association between jobs and article versions
-- `crawl_targets`: configuration, schedule, retry, and lease state
-- `crawl_snapshots`: target/page version, validators, metadata, last-seen state
-- `crawl_changes`: NEW/UPDATED event and previous/current snapshot references
-
-Existing FileRepository remains supported. PostgreSQL is the operational default in
-Docker Compose; migration runs before the MCP server and worker.
-
-## Conditional HTTP design
-
-Previous ETag and Last-Modified values are passed through an internal crawl context,
-not public MCP request fields. The HTTP adapter applies `If-None-Match` and
-`If-Modified-Since` per known URL. A 304 observation bypasses parsing, extraction,
-hashing, and browser fallback. Known prior page URLs are seeded for multi-page
-targets so a 304 start page does not prevent child validation. Browser-only and
-authenticated browser requests do not use this optimization.
-
-## Worker and leases
-
-The scheduler polls at a configured interval and atomically claims batches with
-`FOR UPDATE SKIP LOCKED` plus a time-bound lease. The runner applies a per-target
-timeout, exponential retry backoff with a cap, structured logging, and graceful
-SIGINT/SIGTERM shutdown. A stale lease can be reclaimed after worker failure.
+The single-process asyncio scheduler claims due targets with PostgreSQL
+`FOR UPDATE SKIP LOCKED` and a time-bound lease. An expired lease is reclaimable
+after a crash. A target failure records exponential backoff and a failed
+`CRAWL_RUN`; it does not stop later targets. SIGINT/SIGTERM trigger graceful
+shutdown. Manual runs use the same lease boundary and cannot overlap scheduled
+runs.
 
 ## MCP surface
 
-Existing tools remain compatible:
+Existing tools remain:
 
 - `scrape_page`
 - `crawl_site`
 - `validate_session`
 - `list_supported_sites`
 
-Monitoring tools:
+High-level monitoring tools are:
 
 - `list_crawl_targets`
 - `configure_crawl_target`
 - `run_crawl_target`
 - `get_crawl_status`
-- `get_recent_changes`
-- `get_change_detail`
+- `get_recent_article_changes`
+- `get_article`
 
-The first five monitoring responses are compact DTOs. Full content is returned only
-by `get_change_detail`.
+Change summaries contain article ID, type, title, publisher, URL, publication time,
+and last-changed time, never `ar_content`. Only `get_article(article_id)` returns
+the selected body.
 
-## Observability and failure behavior
+## Extension boundary
 
-Structured events include `crawl_target_started`, `crawl_target_completed`,
-`crawl_target_failed`, and `change_detected`, with target/job/url/mode/duration and
-page counters. Secrets and raw exceptions are not exposed through MCP.
-
-## Verification
-
-Tests cover detector outcomes, repository CRUD, due/disabled target behavior,
-failure isolation, monitoring orchestration, compact MCP responses, conditional
-requests and 304 behavior, PostgreSQL migrations/repositories, worker shutdown,
-Compose structure, and all existing behavior. Final gates are ruff check/format,
-strict mypy, unit tests, PostgreSQL integration tests, and the full pytest suite.
+Kafka or multiple Workers replace the scheduler/claim adapter and may add an
+outbox/queue visibility mechanism. `MonitoringService`, `CrawlService`, article
+extractors, article persistence policy, crawler engines, and MCP query contracts
+remain stable.

@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from crawling_mcp.domain.enums import ChangeType, CrawlJobStatus, CrawlMode
+from crawling_mcp.domain.enums import CrawlJobStatus, CrawlMode
 from crawling_mcp.domain.models import CrawlRequest, utc_now
 
 
 class CrawlTarget(BaseModel):
-    """A persisted bounded crawl schedule and its operational state."""
+    """Persisted bounded crawl schedule and operational state."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -45,7 +44,6 @@ class CrawlTarget(BaseModel):
     lease_expires_at: datetime | None = None
 
     def is_due(self, now: datetime) -> bool:
-        """Return whether a worker may claim this target at `now`."""
         if not self.enabled:
             return False
         if self.lease_expires_at is not None and self.lease_expires_at > now:
@@ -54,7 +52,6 @@ class CrawlTarget(BaseModel):
         return due_at is None or due_at <= now
 
     def to_crawl_request(self) -> CrawlRequest:
-        """Convert persisted target configuration into the existing use-case request."""
         return CrawlRequest(
             start_url=self.url,
             crawl_mode=self.crawl_mode,
@@ -74,13 +71,11 @@ class CrawlTarget(BaseModel):
         )
 
     def retry_delay_seconds(self, *, base_seconds: int, max_seconds: int) -> int:
-        """Return capped exponential delay for the current failure count."""
-        exponent = max(self.failure_count - 1, 0)
-        return min(base_seconds * (1 << exponent), max_seconds)
+        return min(base_seconds * (1 << max(self.failure_count - 1, 0)), max_seconds)
 
 
 class CrawlTargetCreate(BaseModel):
-    """Client-owned fields used to create a target; ID is database-owned."""
+    """Client-owned target fields; PostgreSQL owns the UUIDv7 ID."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -104,8 +99,6 @@ class CrawlTargetCreate(BaseModel):
 
 
 class ConfigureTargetRequest(BaseModel):
-    """High-level create/update command used by MCP without repository details."""
-
     model_config = ConfigDict(extra="forbid")
 
     target_id: UUID | None = None
@@ -118,104 +111,39 @@ class ConfigureTargetRequest(BaseModel):
     max_depth: int | None = Field(default=None, ge=0, le=10)
 
 
-class CrawlSnapshot(BaseModel):
-    """One changed canonical page version and its HTTP validators."""
+class CrawlRun(BaseModel):
+    """Compact metadata for one Worker target execution."""
 
     id: UUID
-    target_id: UUID
-    article_id: UUID | None = None
-    url: str
-    content_hash: str = Field(min_length=64, max_length=64)
-    title: str = ""
-    content: str | None = None
-    source: str | None = None
-    etag: str | None = None
-    last_modified: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    depth: int = Field(default=0, ge=0)
-    collected_at: datetime = Field(default_factory=utc_now)
-    last_seen_at: datetime = Field(default_factory=utc_now)
-
-
-class CrawlSnapshotCreate(BaseModel):
-    """Changed page version before persistence assigns its identifiers."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    target_id: UUID
-    url: str
-    content_hash: str = Field(min_length=64, max_length=64)
-    title: str = ""
-    content: str
-    source: str | None = None
-    published_at: datetime | None = None
-    reporter: str | None = None
-    etag: str | None = None
-    last_modified: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    depth: int = Field(default=0, ge=0)
-    collected_at: datetime = Field(default_factory=utc_now)
-
-
-class CrawlChange(BaseModel):
-    """A compact persisted NEW or UPDATED event."""
-
-    id: UUID
-    target_id: UUID
-    change_type: ChangeType
-    url: str
-    title: str = ""
-    previous_snapshot_id: UUID | None = None
-    current_snapshot_id: UUID
-    detected_at: datetime = Field(default_factory=utc_now)
-
-
-class CrawlChangeCreate(BaseModel):
-    """Change event before persistence assigns its identifier."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    target_id: UUID
-    change_type: ChangeType
-    url: str
-    title: str = ""
-    previous_snapshot_id: UUID | None = None
-    current_snapshot_id: UUID
-    detected_at: datetime = Field(default_factory=utc_now)
-
-
-class CrawlChangeDetail(BaseModel):
-    """Explicit detail response that includes the selected content version."""
-
-    change: CrawlChange
-    snapshot: CrawlSnapshot
-
-
-class CrawlJobSummary(BaseModel):
-    """Small monitoring job status returned to MCP clients."""
-
-    job_id: UUID
     target_id: UUID
     status: CrawlJobStatus
-    checked: int = 0
-    changed: int = 0
-    new: int = 0
-    updated: int = 0
-    unchanged: int = 0
-    failed: int = 0
+    visited_pages: int = 0
+    new_articles: int = 0
+    updated_articles: int = 0
+    unchanged_articles: int = 0
+    failed_pages: int = 0
     started_at: datetime = Field(default_factory=utc_now)
     completed_at: datetime | None = None
     error: str | None = None
 
 
-class MonitoringRunResult(BaseModel):
-    """Internal result of one target run."""
+class CrawlRunCreate(BaseModel):
+    """Run fields before PostgreSQL supplies its UUIDv7 ID."""
 
     target_id: UUID
-    job_id: UUID
-    checked: int = 0
-    changed: int = 0
-    new: int = 0
-    updated: int = 0
-    unchanged: int = 0
-    failed: int = 0
+    status: CrawlJobStatus = CrawlJobStatus.RUNNING
+    started_at: datetime = Field(default_factory=utc_now)
+
+
+class MonitoringRunResult(BaseModel):
+    target_id: UUID
+    crawl_run_id: UUID
+    visited_pages: int = 0
+    new_articles: int = 0
+    updated_articles: int = 0
+    unchanged_articles: int = 0
+    failed_pages: int = 0
+
+    @property
+    def changed_articles(self) -> int:
+        return self.new_articles + self.updated_articles

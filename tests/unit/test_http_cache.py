@@ -31,9 +31,7 @@ def test_conditional_request_uses_previous_etag_and_last_modified() -> None:
         },
     )
 
-    request = engine()._request(
-        "https://example.com/a", label="DETAIL", depth=1, context=context
-    )
+    request = engine()._request("https://example.com/a", label="DETAIL", depth=1, context=context)
 
     assert request.headers.get("If-None-Match") == '"v1"'
     assert request.headers.get("If-Modified-Since") == "Mon, 10 Aug 2026 01:00:00 GMT"
@@ -50,3 +48,16 @@ def test_request_without_cached_validators_has_no_conditional_headers() -> None:
 
     assert "If-None-Match" not in request.headers
     assert "If-Modified-Since" not in request.headers
+
+
+def test_conditional_cache_lookup_normalizes_equivalent_urls() -> None:
+    context = CrawlContext(
+        domain="example.com",
+        cache_entries={
+            "https://example.com/": CrawlCacheEntry(url="https://example.com/", etag='"normalized"')
+        },
+    )
+
+    request = engine()._request("https://example.com", label="START", depth=0, context=context)
+
+    assert request.headers.get("If-None-Match") == '"normalized"'

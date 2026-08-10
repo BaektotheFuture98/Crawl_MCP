@@ -1,24 +1,35 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.engine import RowMapping
 
-from crawling_mcp.domain.enums import ChangeType, CrawlJobStatus, CrawlMode, ErrorCode
-from crawling_mcp.domain.models import CrawlFailure, PageItem
-from crawling_mcp.domain.monitoring import (
-    CrawlChange,
-    CrawlJobSummary,
-    CrawlSnapshot,
-    CrawlTarget,
-)
+from crawling_mcp.domain.articles import Article, ArticleChangeSummary, ArticleCrawlState
+from crawling_mcp.domain.enums import ChangeType, CrawlJobStatus, CrawlMode
+from crawling_mcp.domain.monitoring import CrawlRun, CrawlTarget
 
 StorageRow = Mapping[str, Any] | RowMapping
+_SEOUL = ZoneInfo("Asia/Seoul")
+
+
+def to_article_timestamp(value: datetime | None) -> datetime | None:
+    if value is None or value.tzinfo is None:
+        return value
+    return value.astimezone(_SEOUL).replace(tzinfo=None)
+
+
+def from_article_timestamp(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=_SEOUL)
+    return value.astimezone(UTC)
 
 
 def target_from_row(row: StorageRow) -> CrawlTarget:
-    options = dict(row["crawl_options"] or {})
     return CrawlTarget(
         id=row["id"],
         url=str(row["url"]),
@@ -36,76 +47,62 @@ def target_from_row(row: StorageRow) -> CrawlTarget:
         next_retry_at=row["next_retry_at"],
         lease_owner=row["lease_owner"],
         lease_expires_at=row["lease_expires_at"],
-        **options,
+        **dict(row["crawl_options"] or {}),
     )
 
 
-def snapshot_from_row(row: StorageRow) -> CrawlSnapshot:
-    return CrawlSnapshot(
+def article_from_row(row: StorageRow) -> Article:
+    return Article(
         id=row["id"],
-        target_id=row["target_id"],
+        title=str(row["ar_title"] or ""),
+        content=str(row["ar_content"] or ""),
+        reporter=row["reporter"],
+        publisher=row["publisher"],
+        url=str(row["url"] or ""),
+        published_at=from_article_timestamp(row["published_at"]),
+    )
+
+
+def state_from_row(row: StorageRow) -> ArticleCrawlState:
+    change = row["last_change_type"]
+    return ArticleCrawlState(
         article_id=row["article_id"],
+        target_id=row["target_id"],
         url=str(row["url"]),
         content_hash=str(row["content_hash"]),
-        title=str(row["title"]),
-        content=str(row["content"]),
-        source=row["source"],
         etag=row["etag"],
         last_modified=row["last_modified"],
-        metadata=dict(row["metadata"] or {}),
-        depth=int(row["depth"]),
-        collected_at=row["collected_at"],
+        first_seen_at=row["first_seen_at"],
         last_seen_at=row["last_seen_at"],
+        last_changed_at=row["last_changed_at"],
+        last_change_type=ChangeType(str(change)) if change else None,
     )
 
 
-def change_from_row(row: StorageRow) -> CrawlChange:
-    return CrawlChange(
+def run_from_row(row: StorageRow) -> CrawlRun:
+    return CrawlRun(
         id=row["id"],
         target_id=row["target_id"],
-        change_type=ChangeType(str(row["change_type"])),
-        url=str(row["url"]),
-        title=str(row["title"]),
-        previous_snapshot_id=row["previous_snapshot_id"],
-        current_snapshot_id=row["current_snapshot_id"],
-        detected_at=row["detected_at"],
-    )
-
-
-def job_from_row(row: StorageRow) -> CrawlJobSummary:
-    return CrawlJobSummary(
-        job_id=row["id"],
-        target_id=row["target_id"],
         status=CrawlJobStatus(str(row["status"])),
-        checked=int(row["visited_pages"]),
-        changed=int(row["changed_pages"]),
-        new=int(row["new_pages"]),
-        updated=int(row["updated_pages"]),
-        unchanged=int(row["unchanged_pages"]),
-        failed=int(row["failed_pages"]),
+        visited_pages=int(row["visited_pages"]),
+        new_articles=int(row["new_articles"]),
+        updated_articles=int(row["updated_articles"]),
+        unchanged_articles=int(row["unchanged_articles"]),
+        failed_pages=int(row["failed_pages"]),
         started_at=row["started_at"],
         completed_at=row["completed_at"],
         error=row["error"],
     )
 
 
-def page_item_from_row(row: StorageRow) -> PageItem:
-    return PageItem(
+def change_summary_from_row(row: StorageRow) -> ArticleChangeSummary:
+    return ArticleChangeSummary(
+        article_id=row["article_id"],
+        target_id=row["target_id"],
+        change_type=ChangeType(str(row["last_change_type"])),
+        title=str(row["ar_title"] or ""),
+        publisher=row["publisher"],
         url=str(row["url"]),
-        title=str(row["title"]),
-        content=str(row["content"]),
-        metadata=dict(row["metadata"] or {}),
-        published_at=row["published_at"],
-        source=row["source"],
-        collected_at=row["collected_at"],
-    )
-
-
-def failure_from_row(row: StorageRow) -> CrawlFailure:
-    return CrawlFailure(
-        url=str(row["url"]),
-        error_code=ErrorCode(str(row["error_code"])),
-        message=str(row["message"]),
-        details=dict(row["details"] or {}),
-        artifacts=dict(row["artifacts"] or {}),
+        published_at=from_article_timestamp(row["published_at"]),
+        last_changed_at=row["last_changed_at"],
     )

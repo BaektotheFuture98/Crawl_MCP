@@ -31,8 +31,8 @@ class CrawlingFastMCP(FastMCP):
                 "configure_crawl_target",
                 "run_crawl_target",
                 "get_crawl_status",
-                "get_recent_changes",
-                "get_change_detail",
+                "get_recent_article_changes",
+                "get_article",
             }:
                 raise
             payload = transport_validation_payload(name, arguments)

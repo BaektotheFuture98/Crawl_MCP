@@ -7,17 +7,25 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from crawling_mcp.adapters.storage.postgres.crawl_repository import PostgresCrawlRepository
-from crawling_mcp.adapters.storage.postgres.unit_of_work import PostgresMonitoringStore
-from crawling_mcp.domain.enums import ChangeType
-from crawling_mcp.domain.models import CrawlResult, PageItem
-from crawling_mcp.domain.monitoring import (
-    CrawlChangeCreate,
-    CrawlSnapshotCreate,
-    CrawlTargetCreate,
+from crawling_mcp.adapters.article_extractors import (
+    ArticleExtractorRegistry,
+    StructuredArticleExtractor,
 )
+from crawling_mcp.adapters.storage.postgres import PostgresMonitoringStore
+from crawling_mcp.application.article_persistence_service import ArticlePersistenceService
+from crawling_mcp.application.monitoring_service import MonitoringService
+from crawling_mcp.domain.articles import ArticleCandidate, ArticleObservation
+from crawling_mcp.domain.enums import ChangeType
+from crawling_mcp.domain.models import (
+    CrawlExecution,
+    CrawlRequest,
+    CrawlResult,
+    PageItem,
+    PageSnapshot,
+)
+from crawling_mcp.domain.monitoring import CrawlTargetCreate
 
-pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+_DSN = "postgresql+asyncpg://crawler:crawler@127.0.0.1:54329/crawling"
 
 
 def require_storage_test() -> None:
@@ -25,107 +33,124 @@ def require_storage_test() -> None:
         pytest.skip("set CRAWLING_MCP_RUN_STORAGE_INTEGRATION=1")
 
 
-async def test_postgres_target_snapshot_change_and_article_deduplication() -> None:
-    require_storage_test()
-    engine = create_async_engine(
-        "postgresql+asyncpg://crawler:crawler@127.0.0.1:54329/crawling"
-    )
-    store = PostgresMonitoringStore(engine)
-    now = datetime(2026, 8, 10, 1, 0, tzinfo=UTC)
-    try:
-        async with engine.begin() as connection:
-            await connection.execute(
-                sa.text(
-                    "TRUNCATE crawl_changes, crawl_snapshots, crawl_failures, "
-                    "crawl_job_pages, crawl_jobs, crawl_targets, article CASCADE"
-                )
-            )
+async def clean(engine: object) -> None:
+    async with engine.begin() as connection:  # type: ignore[union-attr]
+        await connection.execute(
+            sa.text("TRUNCATE article_crawl_state, crawl_run, crawl_target, article CASCADE")
+        )
 
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_postgres_article_persistence_uses_one_uuidv7_article_row() -> None:
+    require_storage_test()
+    engine = create_async_engine(_DSN)
+    store = PostgresMonitoringStore(engine)
+    try:
+        await clean(engine)
         async with store() as uow:
             target = await uow.targets.create(
                 CrawlTargetCreate(url="https://example.com", interval_seconds=60)
             )
             await uow.commit()
-        assert target.id.version == 7
-
-        async with store() as uow:
-            claimed = await uow.targets.claim_due(
-                now=now, limit=1, lease_owner="integration", lease_seconds=60
-            )
-            await uow.commit()
-        assert [item.id for item in claimed] == [target.id]
-
-        create = CrawlSnapshotCreate(
-            target_id=target.id,
+        service = ArticlePersistenceService(uow_factory=store)
+        now = datetime(2026, 8, 10, tzinfo=UTC)
+        first = ArticleCandidate(
             url="https://example.com/a",
-            content_hash="a" * 64,
-            title="A",
-            content="body",
-            etag='"v1"',
-            collected_at=now,
+            title="기사 제목",
+            content="기사 본문",
+            reporter="홍길동 기자",
+            publisher="동아일보",
+            published_at=now,
         )
-        async with store() as uow:
-            snapshot = await uow.snapshots.create(create)
-            duplicate = await uow.snapshots.create(create)
-            change = await uow.changes.create(
-                CrawlChangeCreate(
-                    target_id=target.id,
-                    change_type=ChangeType.NEW,
-                    url=snapshot.url,
-                    title=snapshot.title,
-                    current_snapshot_id=snapshot.id,
-                    detected_at=now,
-                )
-            )
-            await uow.commit()
 
-        assert snapshot.id.version == 7
-        assert duplicate.id == snapshot.id
-        assert change.id.version == 7
+        new = await service.persist(
+            target_id=target.id,
+            observation=ArticleObservation(candidate=first, etag='"v1"'),
+            observed_at=now,
+        )
+        unchanged = await service.persist(
+            target_id=target.id,
+            observation=ArticleObservation(candidate=first, etag='"v1"'),
+            observed_at=now,
+        )
+        updated = await service.persist(
+            target_id=target.id,
+            observation=ArticleObservation(
+                candidate=first.model_copy(update={"content": "수정 본문"}), etag='"v2"'
+            ),
+            observed_at=now,
+        )
+
+        assert [new.change_type, unchanged.change_type, updated.change_type] == [
+            ChangeType.NEW,
+            ChangeType.UNCHANGED,
+            ChangeType.UPDATED,
+        ]
+        assert new.article_id.version == 7
+        assert target.id.version == 7
         async with engine.connect() as connection:
-            article_count = (
-                await connection.execute(sa.text("SELECT count(*) FROM article"))
-            ).scalar_one()
-        assert article_count == 1
-
-        async with store() as uow:
-            recent = await uow.changes.recent(target_id=target.id, limit=10)
-            detail = await uow.changes.detail(change.id)
-        assert recent == [change]
-        assert detail is not None
-        assert detail[1].content == "body"
+            row = (
+                await connection.execute(
+                    sa.text("SELECT count(*) AS count, max(ar_content) AS body FROM article")
+                )
+            ).one()
+        assert row.count == 1
+        assert row.body == "수정 본문"
     finally:
         await store.close()
 
 
-async def test_postgres_crawl_repository_round_trip() -> None:
+class Runner:
+    async def crawl_site(
+        self, request: CrawlRequest, *, execution: CrawlExecution | None = None
+    ) -> CrawlResult:
+        assert execution is not None and execution.persist_result is False
+        snapshot = PageSnapshot(
+            url="https://example.com/a",
+            html="<article><h1>기사 제목</h1><p>기사 본문</p></article>",
+            headers={"etag": '"v1"'},
+        )
+        assert execution.page_handler is not None
+        await execution.page_handler(snapshot, [PageItem(url=snapshot.url)])
+        return CrawlResult(
+            job_id=execution.job_id,
+            start_url=request.start_url,
+            visited_pages=1,
+            succeeded_pages=1,
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_postgres_monitoring_service_records_article_state_and_run() -> None:
     require_storage_test()
-    engine = create_async_engine(
-        "postgresql+asyncpg://crawler:crawler@127.0.0.1:54329/crawling"
-    )
-    repository = PostgresCrawlRepository(engine)
-    result = CrawlResult(start_url="https://example.com/manual")
+    engine = create_async_engine(_DSN)
+    store = PostgresMonitoringStore(engine)
     try:
-        await repository.start_job(result)
-        await repository.save_page(
-            result.job_id,
-            PageItem(
-                url="https://example.com/manual",
-                title="Manual",
-                content="body",
-                source="Example",
-            ),
+        await clean(engine)
+        async with store() as uow:
+            target = await uow.targets.create(
+                CrawlTargetCreate(url="https://example.com", interval_seconds=60)
+            )
+            await uow.commit()
+        persistence = ArticlePersistenceService(uow_factory=store)
+        monitoring = MonitoringService(
+            crawler=Runner(),
+            article_extractors=ArticleExtractorRegistry(default=StructuredArticleExtractor()),
+            article_persistence=persistence,
+            uow_factory=store,
         )
-        await repository.set_counts(
-            result.job_id, visited_pages=1, succeeded_pages=1, failed_pages=0
-        )
-        await repository.complete_job(result.job_id)
 
-        stored = await repository.get_job(result.job_id)
+        result = await monitoring.run_target(target.id, force=True)
 
-        assert stored is not None
-        assert stored.items[0].title == "Manual"
-        assert stored.items[0].source == "Example"
-        assert stored.completed_at is not None
+        assert result is not None and result.new_articles == 1
+        assert result.crawl_run_id.version == 7
+        async with store() as uow:
+            runs = await uow.runs.latest(target_id=target.id)
+            changes = await uow.states.recent_changes(target_id=target.id)
+        assert runs[0].new_articles == 1
+        assert changes[0].title == "기사 제목"
+        assert "content" not in changes[0].model_dump()
     finally:
-        await repository.close()
+        await store.close()
