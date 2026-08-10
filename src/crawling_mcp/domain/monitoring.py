@@ -91,6 +91,16 @@ class CrawlTargetCreate(BaseModel):
     auth_profile: str | None = Field(default=None, min_length=1, max_length=128)
     max_pages: int = Field(default=20, ge=1, le=500)
     max_depth: int = Field(default=2, ge=0, le=10)
+    include_patterns: list[str] = Field(default_factory=list, max_length=100)
+    exclude_patterns: list[str] = Field(default_factory=list, max_length=100)
+    same_domain_only: bool = True
+    max_request_retries: int = Field(default=2, ge=0, le=5)
+    request_timeout_seconds: int = Field(default=30, ge=1, le=120)
+    job_timeout_seconds: int = Field(default=300, ge=1, le=3600)
+    max_concurrency: int = Field(default=3, ge=1, le=20)
+    respect_robots_txt: bool = True
+    request_delay_seconds: float = Field(default=0.5, ge=0, le=60)
+    remove_tracking_parameters: bool = True
 
 
 class CrawlSnapshot(BaseModel):
