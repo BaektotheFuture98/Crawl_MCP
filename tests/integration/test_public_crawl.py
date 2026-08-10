@@ -9,7 +9,13 @@ from crawling_mcp.adapters.crawlee.router import PageRouter
 from crawling_mcp.adapters.extractors.example import ExampleExtractor
 from crawling_mcp.adapters.extractors.generic import GenericExtractor
 from crawling_mcp.adapters.extractors.registry import ExtractorRegistry
-from crawling_mcp.domain.models import CrawlContext, CrawlRequest, ScrapePageRequest
+from crawling_mcp.domain.models import (
+    CrawlCacheEntry,
+    CrawlContext,
+    CrawlRequest,
+    PageSnapshot,
+    ScrapePageRequest,
+)
 from crawling_mcp.infrastructure.security import UrlSecurityValidator
 
 
@@ -54,3 +60,39 @@ async def test_http_crawl_respects_max_pages(test_site_url: str) -> None:
     )
 
     assert len(result.items) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_conditional_request_returns_not_modified_observation(
+    test_site_url: str,
+) -> None:
+    engine = make_engine()
+    url = f"{test_site_url}/test-site/cacheable"
+    first = await engine.scrape(
+        ScrapePageRequest(url=url, crawl_mode="http"),
+        CrawlContext(domain="127.0.0.1"),
+    )
+    observed: list[PageSnapshot] = []
+
+    async def not_modified(snapshot: PageSnapshot) -> None:
+        observed.append(snapshot)
+
+    second = await engine.scrape(
+        ScrapePageRequest(url=url, crawl_mode="http"),
+        CrawlContext(
+            domain="127.0.0.1",
+            cache_entries={
+                url: CrawlCacheEntry(
+                    url=url,
+                    etag=first.headers["etag"],
+                    last_modified=first.headers["last-modified"],
+                )
+            },
+            not_modified_handler=not_modified,
+        ),
+    )
+
+    assert second.status_code == 304
+    assert second.not_modified
+    assert observed == [second]
