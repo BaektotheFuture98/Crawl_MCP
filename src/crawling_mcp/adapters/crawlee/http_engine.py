@@ -103,8 +103,36 @@ class HttpCrawlerEngine:
             url=final_url,
             html=html,
             status_code=context.http_response.status_code,
+            headers={
+                str(key).lower(): str(value)
+                for key, value in context.http_response.headers.items()
+            },
             links=links,
             depth=depth,
+            not_modified=context.http_response.status_code == 304,
+        )
+
+    def _request(
+        self,
+        url: str,
+        *,
+        label: str,
+        depth: int,
+        context: CrawlContext,
+    ) -> Request:
+        """Build one request with validators from the previous page version."""
+        headers: dict[str, str] = {}
+        cached = context.cache_entries.get(url)
+        if cached is not None:
+            if cached.etag:
+                headers["If-None-Match"] = cached.etag
+            if cached.last_modified:
+                headers["If-Modified-Since"] = cached.last_modified
+        return Request.from_url(
+            url,
+            label=label,
+            headers=headers,
+            user_data={"depth": depth},
         )
 
     async def scrape(self, request: ScrapePageRequest, context: CrawlContext) -> PageSnapshot:
@@ -123,10 +151,21 @@ class HttpCrawlerEngine:
         async def handler(crawling_context: BeautifulSoupCrawlingContext) -> None:
             snapshot = self._snapshot(crawling_context, depth=0)
             await self._validator.validate(snapshot.url)
+            if snapshot.not_modified and context.not_modified_handler is not None:
+                await context.not_modified_handler(snapshot)
             snapshots.append(snapshot)
 
         try:
-            await crawler.run([request.url])
+            await crawler.run(
+                [
+                    self._request(
+                        request.url,
+                        label=PageType.START.value,
+                        depth=0,
+                        context=context,
+                    )
+                ]
+            )
         finally:
             await request_queue.drop()
         if not snapshots:
@@ -180,8 +219,17 @@ class HttpCrawlerEngine:
             depth = int(depth_value) if isinstance(depth_value, int | str) else 0
             snapshot = self._snapshot(crawling_context, depth=depth)
             await self._validator.validate(snapshot.url)
+            if snapshot.not_modified:
+                if context.not_modified_handler is not None:
+                    await context.not_modified_handler(snapshot)
+                result.visited_pages += 1
+                result.succeeded_pages += 1
+                return
             snapshot.page_type = self._router.classify(snapshot, domain=context.domain)
-            result.items.extend(await extractor.extract(snapshot))
+            items = await extractor.extract(snapshot)
+            if context.page_handler is not None:
+                await context.page_handler(snapshot, items)
+            result.items.extend(items)
             result.visited_pages += 1
             result.succeeded_pages += 1
             if request.request_delay_seconds:
@@ -212,10 +260,11 @@ class HttpCrawlerEngine:
                     domain=context.domain,
                 ).value
                 queued.append(
-                    Request.from_url(
+                    self._request(
                         normalized,
                         label=label,
-                        user_data={"depth": depth + 1},
+                        depth=depth + 1,
+                        context=context,
                     )
                 )
             if queued:
@@ -251,13 +300,38 @@ class HttpCrawlerEngine:
             result.visited_pages += 1
             result.failed_pages += 1
 
-        start = Request.from_url(
-            request.start_url,
-            label=PageType.START.value,
-            user_data={"depth": 0},
-        )
+        seeds: list[Request] = [
+            self._request(
+                request.start_url,
+                label=PageType.START.value,
+                depth=0,
+                context=context,
+            )
+        ]
+        for cached in context.cache_entries.values():
+            if cached.url == request.start_url or len(seeds) >= request.max_pages:
+                continue
+            if not policy.allows(cached.url, depth=cached.depth):
+                continue
+            seen.add(
+                normalize_url(
+                    cached.url,
+                    remove_tracking=request.remove_tracking_parameters,
+                )
+            )
+            label = self._router.classify(
+                PageSnapshot(url=cached.url, html=""), domain=context.domain
+            ).value
+            seeds.append(
+                self._request(
+                    cached.url,
+                    label=label,
+                    depth=cached.depth,
+                    context=context,
+                )
+            )
         try:
-            await crawler.run([start])
+            await crawler.run(seeds)
         finally:
             await request_queue.drop()
         return result

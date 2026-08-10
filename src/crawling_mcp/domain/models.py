@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -68,6 +69,7 @@ class PageSnapshot(BaseModel):
     page_type: PageType = PageType.DETAIL
     links: list[str] = Field(default_factory=list)
     depth: int = 0
+    not_modified: bool = False
 
 
 class PageItem(BaseModel):
@@ -86,6 +88,30 @@ class PageItem(BaseModel):
     publisher: str | None = None
     source: str | None = None
     collected_at: datetime = Field(default_factory=utc_now)
+
+
+class CrawlCacheEntry(BaseModel):
+    """Previously observed page validators supplied to the HTTP adapter."""
+
+    url: str
+    etag: str | None = None
+    last_modified: str | None = None
+    depth: int = Field(default=0, ge=0)
+
+
+class CrawlExecution(BaseModel):
+    """Internal execution hooks excluded from public request and result models."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    job_id: UUID | None = None
+    cache_entries: dict[str, CrawlCacheEntry] = Field(default_factory=dict)
+    page_handler: Callable[[PageSnapshot, list[PageItem]], Awaitable[None]] | None = Field(
+        default=None, exclude=True, repr=False
+    )
+    not_modified_handler: Callable[[PageSnapshot], Awaitable[None]] | None = Field(
+        default=None, exclude=True, repr=False
+    )
 
 
 class CrawlFailure(BaseModel):
@@ -140,6 +166,13 @@ class CrawlContext(BaseModel):
     adapter_name: str = "generic"
     authenticated: bool = False
     browser_context: Any | None = None
+    cache_entries: dict[str, CrawlCacheEntry] = Field(default_factory=dict)
+    page_handler: Callable[[PageSnapshot, list[PageItem]], Awaitable[None]] | None = Field(
+        default=None, exclude=True, repr=False
+    )
+    not_modified_handler: Callable[[PageSnapshot], Awaitable[None]] | None = Field(
+        default=None, exclude=True, repr=False
+    )
 
 
 class AuthProfile(BaseModel):

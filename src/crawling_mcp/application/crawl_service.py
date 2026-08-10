@@ -14,6 +14,7 @@ from crawling_mcp.domain.errors import (
 )
 from crawling_mcp.domain.models import (
     CrawlContext,
+    CrawlExecution,
     CrawlFailure,
     CrawlLimits,
     CrawlRequest,
@@ -227,7 +228,9 @@ class CrawlService:
             await self._persist_terminal_failure(job_id=job_id, url=request.url, error=domain_error)
             raise domain_error from error
 
-    async def _run_crawl_site(self, request: CrawlRequest, job_id: UUID) -> CrawlResult:
+    async def _run_crawl_site(
+        self, request: CrawlRequest, job_id: UUID, execution: CrawlExecution | None
+    ) -> CrawlResult:
         validated = await self._validator.validate(request.start_url)
         authenticated = request.auth_profile is not None
         extractor = self._extractors.get(validated.hostname, authenticated=authenticated)
@@ -236,6 +239,11 @@ class CrawlService:
             job_id=job_id,
             domain=validated.hostname,
             adapter_name=extractor.name,
+            cache_entries=execution.cache_entries if execution is not None else {},
+            page_handler=execution.page_handler if execution is not None else None,
+            not_modified_handler=(
+                execution.not_modified_handler if execution is not None else None
+            ),
         )
         log_context = {
             "job_id": str(context.job_id),
@@ -285,16 +293,18 @@ class CrawlService:
         )
         return stored
 
-    async def crawl_site(self, request: CrawlRequest) -> CrawlResult:
+    async def crawl_site(
+        self, request: CrawlRequest, *, execution: CrawlExecution | None = None
+    ) -> CrawlResult:
         """Run a bounded crawl job under one end-to-end deadline."""
         self._enforce_crawl_limits(request)
-        job_id = uuid4()
+        job_id = execution.job_id if execution is not None and execution.job_id else uuid4()
         try:
             async with asyncio.timeout(request.job_timeout_seconds):
                 await self._repository.start_job(
                     CrawlResult(job_id=job_id, start_url=request.start_url)
                 )
-                return await self._run_crawl_site(request, job_id)
+                return await self._run_crawl_site(request, job_id, execution)
         except TimeoutError as error:
             domain_error = NavigationError(
                 url=request.start_url,

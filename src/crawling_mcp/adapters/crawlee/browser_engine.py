@@ -113,6 +113,11 @@ class BrowserCrawlerEngine:
             url=page.url,
             html=html,
             status_code=response.status if response else None,
+            headers=(
+                {str(key).lower(): str(value) for key, value in response.headers.items()}
+                if response
+                else {}
+            ),
             links=[str(link) for link in links],
         )
 
@@ -203,6 +208,8 @@ class BrowserCrawlerEngine:
                 snapshot.depth = depth
                 snapshot.page_type = self._router.classify(snapshot, domain=context.domain)
                 items = await extractor.extract(snapshot)
+                if context.page_handler is not None:
+                    await context.page_handler(snapshot, items)
                 async with result_lock:
                     result.items.extend(items)
                     result.visited_pages += 1
