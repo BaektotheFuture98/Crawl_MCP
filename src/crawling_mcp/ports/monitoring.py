@@ -6,6 +6,7 @@ from types import TracebackType
 from typing import Protocol
 from uuid import UUID
 
+from crawling_mcp.domain.models import CrawlExecution, CrawlRequest, CrawlResult
 from crawling_mcp.domain.monitoring import (
     CrawlChange,
     CrawlChangeCreate,
@@ -15,6 +16,14 @@ from crawling_mcp.domain.monitoring import (
     CrawlTarget,
     CrawlTargetCreate,
 )
+
+
+class CrawlRunner(Protocol):
+    """Application-facing crawl use case reused by the monitoring service."""
+
+    async def crawl_site(
+        self, request: CrawlRequest, *, execution: CrawlExecution | None = None
+    ) -> CrawlResult: ...
 
 
 class TargetRepository(Protocol):
