@@ -9,14 +9,26 @@ Python Crawling MCP는 MCP Client가 요청한 공개 페이지와 사전에 등
 ```text
 FastMCP Adapter
     ↓ 입력 검증, Application Service 호출, 응답 직렬화
-CrawlService ── AuthService
+CrawlService ── AuthService ── MonitoringService
     ↓ Protocol ports
-CrawlerEngine / AuthenticationAdapter / PageExtractor / CrawlRepository / Network ports
+CrawlerEngine / AuthenticationAdapter / PageExtractor / CrawlRepository / Monitoring ports
     ↑
 Crawlee HTTP / shared Playwright browser / validated egress proxy / registries / storage
 ```
 
 MCP Tool은 Playwright와 Crawlee를 직접 사용하지 않습니다. `CrawlService`는 Protocol에만 의존하므로 같은 로직을 CLI, REST API 또는 Worker Adapter에서 재사용할 수 있습니다. 서버 lifespan이 Playwright와 Chromium을 한 번 시작하고, 작업별 BrowserContext로 세션을 격리합니다.
+
+지속 크롤링은 Hermes가 MCP를 polling하는 대신 별도 Python Worker가 담당합니다.
+
+```text
+Hermes -> MCP query/command tools -> MonitoringQueryService -> PostgreSQL
+
+Crawler Worker -> MonitoringService -> CrawlService -> Adaptive Engine
+                                      -> HTTP / shared Playwright
+                                      -> ChangeDetector -> PostgreSQL
+```
+
+반복 가능한 수집·비교·저장은 Python 코드에서 수행하고, Hermes는 변경이 발생한 뒤 분석·요약·판단이 필요할 때만 호출합니다.
 
 ## 디렉터리
 
@@ -27,17 +39,18 @@ src/crawling_mcp/
 ├── ports/            # crawler/auth/extractor/repository/browser/network/robots Protocol
 ├── adapters/
 │   ├── mcp/          # 네 MCP Tool
+│   ├── worker/       # polling scheduler와 graceful runner
 │   ├── crawlee/      # HTTP/browser/adaptive engine, factory, router
 │   ├── auth/         # registry, no-auth, saved session, example login
 │   ├── extractors/   # generic/example extractor와 registry
-│   └── storage/      # memory/file repository
+│   └── storage/      # memory/file 및 PostgreSQL repository
 ├── infrastructure/   # 설정, SSRF, egress proxy, robots, logging, browser, artifacts
 ├── bootstrap.py      # dependency composition root
 ├── server.py         # FastMCP lifespan
 └── test_site.py      # 개발 전용 로그인 사이트
 ```
 
-런타임 데이터는 `data/auth`, `data/results`, `data/failures`, `data/screenshots`에 저장되며 Git에서 제외됩니다.
+운영 crawl target, snapshot, change와 article은 PostgreSQL에 저장합니다. FileRepository는 기존 단일 프로세스 수동 크롤링 호환성을 위해 유지됩니다.
 
 ## 로컬 설치와 실행
 
@@ -47,8 +60,17 @@ Python 3.12 이상과 [uv](https://docs.astral.sh/uv/)가 필요합니다.
 uv sync
 uv run playwright install chromium
 cp .env.example .env
+uv run alembic upgrade head
 uv run python -m crawling_mcp
 ```
+
+Worker는 별도 프로세스로 실행합니다.
+
+```bash
+uv run python -m crawling_mcp.worker
+```
+
+Worker는 MCP를 호출하지 않고 `MonitoringService -> CrawlService`를 직접 호출합니다. 지속 크롤링 Worker는 `CRAWLING_MCP_REPOSITORY=postgres`에서만 시작됩니다.
 
 서버는 STDIO transport를 사용합니다. stdout은 MCP protocol 전용이고 구조화 로그는 stderr로 출력됩니다.
 
@@ -66,9 +88,10 @@ uv run python -m crawling_mcp.test_site
 
 ```bash
 cp .env.example .env
-docker compose build
-docker compose run --rm -T mcp-server
+docker compose up -d
 ```
+
+기본 Compose는 PostgreSQL 18, Alembic migration, MCP Server, Crawler Worker를 순서대로 시작합니다. MinIO는 사용하지 않습니다.
 
 기본 Compose는 사설망 접근을 차단하며 테스트 사이트를 시작하지 않습니다. 로컬 Docker 인증 예제는 명시적인 test override와 profile로 실행합니다.
 
@@ -102,6 +125,8 @@ Codex, Claude Desktop 등 STDIO MCP Client에서는 절대 경로를 사용합�
 ```
 
 ## MCP Tools
+
+MCP에는 기존 수동 크롤링 Tool과 지속 크롤링용 고수준 Tool이 함께 등록됩니다.
 
 ### `scrape_page`
 
@@ -150,6 +175,112 @@ Codex, Claude Desktop 등 STDIO MCP Client에서는 절대 경로를 사용합�
 ### `list_supported_sites`
 
 등록된 domain, authentication Adapter 이름, extractor 이름만 반환합니다. 환경변수 이름, storage path와 secret은 반환하지 않습니다.
+
+### `configure_crawl_target`
+
+target ID 없이 호출하면 생성하고, ID가 있으면 전달한 필드만 수정합니다.
+
+```json
+{
+  "url": "https://example.com/news",
+  "interval_seconds": 300,
+  "enabled": true,
+  "crawl_mode": "auto",
+  "max_pages": 20,
+  "max_depth": 2
+}
+```
+
+### `list_crawl_targets`
+
+```json
+{"enabled": true, "limit": 50}
+```
+
+설정과 스케줄 상태만 반환하며 기사 본문은 반환하지 않습니다.
+
+### `run_crawl_target`
+
+```json
+{"target_id": "0198..."}
+```
+
+등록 target을 즉시 한 번 실행하고 checked/changed/new/updated/unchanged/failed 집계만 반환합니다.
+
+### `get_crawl_status`
+
+```json
+{"target_id": "0198...", "limit": 20}
+```
+
+최근 Worker job 집계를 반환합니다. target ID를 생략하면 여러 target의 최신 상태를 반환합니다.
+
+### `get_recent_changes`
+
+```json
+{"target_id": "0198...", "limit": 20}
+```
+
+`change_id`, URL, change type, 제목, 감지시간만 반환합니다. 본문과 raw metadata는 포함하지 않습니다.
+
+### `get_change_detail`
+
+```json
+{"change_id": "0198..."}
+```
+
+Hermes가 실제 분석 대상으로 선택한 단일 change의 snapshot 본문을 반환합니다.
+
+## 지속 크롤링 흐름
+
+1. Worker가 `FOR UPDATE SKIP LOCKED`와 lease를 사용해 due target을 claim합니다.
+2. MonitoringService가 최신 snapshot의 ETag/Last-Modified와 알려진 URL을 준비합니다.
+3. 기존 CrawlService가 HTTP 우선, 필요한 경우에만 Browser fallback으로 수집합니다.
+4. HTTP 304는 parsing, extractor, hash, Browser fallback을 모두 생략합니다.
+5. 추출된 제목·본문·canonical URL을 정규화하고 SHA-256으로 비교합니다.
+6. NEW/UPDATED만 새 article/snapshot/change로 저장합니다.
+7. UNCHANGED는 snapshot `last_seen_at`만 갱신합니다.
+8. target의 다음 실행시간 또는 실패 retry/backoff를 저장하고 lease를 해제합니다.
+
+한 target의 timeout이나 오류는 다른 target 실행을 중단하지 않습니다. Worker 종료 시 SIGINT/SIGTERM을 받아 현재 polling loop를 정리하고 Browser/PostgreSQL lifecycle을 닫습니다.
+
+## PostgreSQL schema
+
+- `article`: DB 생성 UUIDv7, 수집/작성시간, 제목, 내용, 출처, URL, content hash
+- `crawl_targets`: URL, interval, enabled, mode/auth/crawl 옵션, 실행·retry·lease 상태
+- `crawl_jobs`: target별 실행 상태와 checked/changed/new/updated/unchanged/failed 집계
+- `crawl_job_pages`: job과 deduplicated article version 연결
+- `crawl_snapshots`: target/page별 변경 version과 ETag/Last-Modified, last seen
+- `crawl_changes`: NEW/UPDATED event와 이전·현재 snapshot 참조
+- `crawl_failures`: 페이지별 안전한 실패 정보
+
+`article`, target, snapshot, change ID는 PostgreSQL 18 `DEFAULT uuidv7()`가 생성합니다. Adapter INSERT는 ID를 전달하지 않고 `RETURNING id`로 결과만 받습니다. 동일 URL/content hash article은 재사용되므로 UNCHANGED 실행마다 본문이 중복 저장되지 않습니다.
+
+`DELETED`는 첫 버전에서 저장하지 않습니다. bounded crawl이나 부분 실패로 방문하지 못한 페이지를 실제 삭제로 오판할 수 있기 때문입니다.
+
+## Hermes 사용 방식
+
+권장 흐름은 다음과 같습니다.
+
+1. 최초 한 번 `configure_crawl_target`으로 감시 대상을 등록합니다.
+2. 일반적인 주기 실행은 Worker에 맡기고 Hermes가 `crawl_site`를 polling하지 않습니다.
+3. 분석이 필요할 때 `get_crawl_status` 또는 `get_recent_changes`를 호출합니다.
+4. 관심 있는 change만 `get_change_detail`로 가져와 요약·판단합니다.
+5. 긴급 재수집이 필요할 때만 `run_crawl_target`을 호출합니다.
+
+기존 방식은 매 주기마다 Agent 실행, MCP 호출, 전체 CrawlResult context 전송이 발생했습니다. 새 방식은 변경이 없어도 Python Worker와 HTTP 304/작은 DB update만 수행합니다. LLM context에는 작은 change summary만 들어가고 선택한 본문만 상세 조회하므로 호출 횟수와 token 사용량이 함께 감소합니다.
+
+## 향후 분산 확장
+
+현재 scheduler는 단일 Worker polling loop지만 target claim은 PostgreSQL lease와 `SKIP LOCKED`를 사용하므로 여러 Worker가 같은 target을 동시에 실행하지 않습니다. 규모가 커지면 다음 경계만 교체합니다.
+
+- `adapters/worker/scheduler.py`: PostgreSQL polling을 Kafka/queue consumer로 교체
+- `TargetRepository.claim_due`: scheduler producer 또는 dispatcher로 이동
+- lease 컬럼: queue visibility timeout/heartbeat와 결합
+- `MonitoringService`: 그대로 유지하고 idempotency key를 job/target lease에 추가
+- `MonitoringUnitOfWork`: outbox table을 추가해 snapshot/change commit과 Kafka publish를 원자화
+
+CrawlerEngine, CrawlService, ChangeDetector, MCP query adapter는 분산 Worker 전환 시 변경하지 않습니다.
 
 ## 인증 프로필 등록
 
@@ -204,6 +335,7 @@ uv run ruff format --check .
 uv run mypy src
 uv run pytest
 uv run pytest -m integration
+CRAWLING_MCP_RUN_STORAGE_INTEGRATION=1 uv run pytest -m integration tests/integration/test_postgres_monitoring.py
 ```
 
 기본 pytest는 빠른 단위 테스트만 실행합니다. `integration` marker는 로컬 FastAPI 포트와 Chromium을 사용하며 공개 수집, 인증, storage-state 재사용, 만료 후 재로그인, 목록·상세 탐색, 실패 처리를 검증합니다.
@@ -242,5 +374,6 @@ data/failures/{job_id}/
 - 임의 사이트 로그인 form을 자동 추측하지 않습니다.
 - Adaptive HTTP→browser 전환은 본문 길이·JS shell·login redirect 휴리스틱입니다.
 - Browser traversal은 작업별 context 안에서 bounded worker queue를 사용하며 `max_concurrency`, 사이트별 요청 간격, robots.txt를 함께 적용합니다.
-- FileRepository는 단일 호스트용입니다. 다중 replica는 같은 Repository Protocol의 PostgreSQL 구현과 분산 queue가 필요합니다.
+- FileRepository는 기존 수동 크롤링용 단일 호스트 Adapter입니다. 지속 Worker는 PostgreSQL을 요구합니다.
+- scheduler는 현재 단일 polling 프로세스이며 Kafka/outbox는 아직 포함하지 않습니다.
 - 운영 사설망 crawling은 기본 제공하지 않습니다. `allow_private_networks`는 로컬 통합 테스트 또는 격리된 테스트 Compose에서만 사용하십시오.
