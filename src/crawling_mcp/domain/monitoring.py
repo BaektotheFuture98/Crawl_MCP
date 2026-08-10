@@ -103,6 +103,21 @@ class CrawlTargetCreate(BaseModel):
     remove_tracking_parameters: bool = True
 
 
+class ConfigureTargetRequest(BaseModel):
+    """High-level create/update command used by MCP without repository details."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_id: UUID | None = None
+    url: str | None = Field(default=None, min_length=1, max_length=4096)
+    interval_seconds: int | None = Field(default=None, ge=10, le=31_536_000)
+    enabled: bool | None = None
+    crawl_mode: CrawlMode | None = None
+    auth_profile: str | None = Field(default=None, min_length=1, max_length=128)
+    max_pages: int | None = Field(default=None, ge=1, le=500)
+    max_depth: int | None = Field(default=None, ge=0, le=10)
+
+
 class CrawlSnapshot(BaseModel):
     """One changed canonical page version and its HTTP validators."""
 
@@ -167,6 +182,13 @@ class CrawlChangeCreate(BaseModel):
     previous_snapshot_id: UUID | None = None
     current_snapshot_id: UUID
     detected_at: datetime = Field(default_factory=utc_now)
+
+
+class CrawlChangeDetail(BaseModel):
+    """Explicit detail response that includes the selected content version."""
+
+    change: CrawlChange
+    snapshot: CrawlSnapshot
 
 
 class CrawlJobSummary(BaseModel):

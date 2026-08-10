@@ -15,6 +15,7 @@ from crawling_mcp.domain.monitoring import (
     CrawlSnapshotCreate,
     CrawlTarget,
     CrawlTargetCreate,
+    MonitoringRunResult,
 )
 
 
@@ -24,6 +25,14 @@ class CrawlRunner(Protocol):
     async def crawl_site(
         self, request: CrawlRequest, *, execution: CrawlExecution | None = None
     ) -> CrawlResult: ...
+
+
+class TargetRunner(Protocol):
+    """Manual target execution surface used by monitoring commands."""
+
+    async def run_target(
+        self, target_id: UUID, *, force: bool = False
+    ) -> MonitoringRunResult | None: ...
 
 
 class TargetRepository(Protocol):

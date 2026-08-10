@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Protocol, cast
+from uuid import UUID
 
 import structlog
 from mcp.server.fastmcp import FastMCP
@@ -20,6 +21,14 @@ from crawling_mcp.domain.models import (
     ScrapePageRequest,
     SupportedSite,
 )
+from crawling_mcp.domain.monitoring import (
+    ConfigureTargetRequest,
+    CrawlChange,
+    CrawlChangeDetail,
+    CrawlJobSummary,
+    CrawlTarget,
+    MonitoringRunResult,
+)
 from crawling_mcp.infrastructure.logging import mask_sensitive
 
 
@@ -33,6 +42,24 @@ class McpApplication(Protocol):
     async def validate_session(self, auth_profile: str) -> bool: ...
 
     def list_supported_sites(self) -> list[SupportedSite]: ...
+
+    async def list_crawl_targets(
+        self, *, enabled: bool | None, limit: int
+    ) -> list[CrawlTarget]: ...
+
+    async def configure_crawl_target(self, request: ConfigureTargetRequest) -> CrawlTarget: ...
+
+    async def run_crawl_target(self, target_id: UUID) -> MonitoringRunResult: ...
+
+    async def get_crawl_status(
+        self, *, target_id: UUID | None, limit: int
+    ) -> list[CrawlJobSummary]: ...
+
+    async def get_recent_changes(
+        self, *, target_id: UUID | None, limit: int
+    ) -> list[CrawlChange]: ...
+
+    async def get_change_detail(self, change_id: UUID) -> CrawlChangeDetail | None: ...
 
 
 def _error_payload(error: CrawlError) -> dict[str, Any]:
@@ -162,3 +189,115 @@ def register_tools(server: FastMCP, application: McpApplication) -> None:
         return {
             "sites": [site.model_dump(mode="json") for site in application.list_supported_sites()]
         }
+
+    @server.tool()
+    async def list_crawl_targets(
+        enabled: bool | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """List bounded monitoring target configuration without crawl content."""
+        try:
+            targets = await application.list_crawl_targets(enabled=enabled, limit=limit)
+            return {
+                "count": len(targets),
+                "targets": [target.model_dump(mode="json") for target in targets],
+            }
+        except Exception as error:
+            logger.error("unexpected_list_targets_tool_error", error_type=type(error).__name__)
+            return _error_payload(NavigationError(reason="internal_error"))
+
+    @server.tool()
+    async def configure_crawl_target(
+        target_id: str | None = None,
+        url: str | None = None,
+        interval_seconds: int | None = None,
+        enabled: bool | None = None,
+        crawl_mode: str | None = None,
+        auth_profile: str | None = None,
+        max_pages: int | None = None,
+        max_depth: int | None = None,
+    ) -> dict[str, Any]:
+        """Create or update one persistent target through a single high-level command."""
+        try:
+            request = ConfigureTargetRequest.model_validate(
+                {
+                    "target_id": target_id,
+                    "url": url,
+                    "interval_seconds": interval_seconds,
+                    "enabled": enabled,
+                    "crawl_mode": crawl_mode,
+                    "auth_profile": auth_profile,
+                    "max_pages": max_pages,
+                    "max_depth": max_depth,
+                }
+            )
+            return (await application.configure_crawl_target(request)).model_dump(mode="json")
+        except ValidationError as error:
+            return _validation_payload(error)
+        except (KeyError, ValueError) as error:
+            return _error_payload(InvalidUrlError(reason=type(error).__name__))
+        except Exception as error:
+            logger.error("unexpected_configure_target_tool_error", error_type=type(error).__name__)
+            return _error_payload(NavigationError(reason="internal_error"))
+
+    @server.tool()
+    async def run_crawl_target(target_id: str) -> dict[str, Any]:
+        """Run one configured target on demand without returning page content."""
+        try:
+            return (await application.run_crawl_target(UUID(target_id))).model_dump(mode="json")
+        except (KeyError, ValueError):
+            return _error_payload(InvalidUrlError(reason="invalid_target_id"))
+        except CrawlError as error:
+            return _error_payload(error)
+        except Exception as error:
+            logger.error("unexpected_run_target_tool_error", error_type=type(error).__name__)
+            return _error_payload(NavigationError(reason="internal_error"))
+
+    @server.tool()
+    async def get_crawl_status(
+        target_id: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Return compact latest worker status records."""
+        try:
+            parsed_id = UUID(target_id) if target_id else None
+            jobs = await application.get_crawl_status(target_id=parsed_id, limit=limit)
+            return {"count": len(jobs), "jobs": [job.model_dump(mode="json") for job in jobs]}
+        except ValueError:
+            return _error_payload(InvalidUrlError(reason="invalid_target_id"))
+        except Exception as error:
+            logger.error("unexpected_crawl_status_tool_error", error_type=type(error).__name__)
+            return _error_payload(NavigationError(reason="internal_error"))
+
+    @server.tool()
+    async def get_recent_changes(
+        target_id: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Return bounded NEW/UPDATED summaries without article content."""
+        try:
+            parsed_id = UUID(target_id) if target_id else None
+            changes = await application.get_recent_changes(target_id=parsed_id, limit=limit)
+            return {
+                "count": len(changes),
+                "changes": [change.model_dump(mode="json") for change in changes],
+            }
+        except ValueError:
+            return _error_payload(InvalidUrlError(reason="invalid_target_id"))
+        except Exception as error:
+            logger.error("unexpected_recent_changes_tool_error", error_type=type(error).__name__)
+            return _error_payload(NavigationError(reason="internal_error"))
+
+    @server.tool()
+    async def get_change_detail(change_id: str) -> dict[str, Any]:
+        """Return article content only for one explicitly selected change."""
+        try:
+            detail = await application.get_change_detail(UUID(change_id))
+            if detail is None:
+                return _error_payload(InvalidUrlError(reason="change_not_found"))
+            return detail.model_dump(mode="json")
+        except ValueError:
+            return _error_payload(InvalidUrlError(reason="invalid_change_id"))
+        except Exception as error:
+            logger.error("unexpected_change_detail_tool_error", error_type=type(error).__name__)
+            return _error_payload(NavigationError(reason="internal_error"))

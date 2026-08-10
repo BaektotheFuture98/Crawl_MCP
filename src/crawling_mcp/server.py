@@ -23,7 +23,17 @@ class CrawlingFastMCP(FastMCP):
         try:
             return await super().call_tool(name, arguments)
         except ToolError:
-            if name not in {"scrape_page", "crawl_site", "validate_session"}:
+            if name not in {
+                "scrape_page",
+                "crawl_site",
+                "validate_session",
+                "list_crawl_targets",
+                "configure_crawl_target",
+                "run_crawl_target",
+                "get_crawl_status",
+                "get_recent_changes",
+                "get_change_detail",
+            }:
                 raise
             payload = transport_validation_payload(name, arguments)
             content = TextContent(
