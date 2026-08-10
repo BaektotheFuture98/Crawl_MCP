@@ -43,3 +43,11 @@ def test_dockerfile_uses_matching_playwright_image_and_non_root_user() -> None:
     assert "mcr.microsoft.com/playwright/python:v1.62.0-noble" in dockerfile
     assert "USER crawling" in dockerfile
     assert 'ENTRYPOINT ["/app/.venv/bin/python", "-m", "crawling_mcp"]' in dockerfile
+
+
+def test_project_declares_async_postgres_and_migration_dependencies() -> None:
+    project = Path("pyproject.toml").read_text(encoding="utf-8")
+
+    assert '"sqlalchemy>=2.0,<3"' in project
+    assert '"asyncpg>=0.30,<1"' in project
+    assert '"alembic>=1.16,<2"' in project
