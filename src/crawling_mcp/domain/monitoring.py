@@ -112,10 +112,44 @@ class CrawlSnapshot(BaseModel):
     last_seen_at: datetime = Field(default_factory=utc_now)
 
 
+class CrawlSnapshotCreate(BaseModel):
+    """Changed page version before persistence assigns its identifiers."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_id: UUID
+    url: str
+    content_hash: str = Field(min_length=64, max_length=64)
+    title: str = ""
+    content: str
+    source: str | None = None
+    published_at: datetime | None = None
+    reporter: str | None = None
+    etag: str | None = None
+    last_modified: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    depth: int = Field(default=0, ge=0)
+    collected_at: datetime = Field(default_factory=utc_now)
+
+
 class CrawlChange(BaseModel):
     """A compact persisted NEW or UPDATED event."""
 
     id: UUID
+    target_id: UUID
+    change_type: ChangeType
+    url: str
+    title: str = ""
+    previous_snapshot_id: UUID | None = None
+    current_snapshot_id: UUID
+    detected_at: datetime = Field(default_factory=utc_now)
+
+
+class CrawlChangeCreate(BaseModel):
+    """Change event before persistence assigns its identifier."""
+
+    model_config = ConfigDict(extra="forbid")
+
     target_id: UUID
     change_type: ChangeType
     url: str
