@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from typing import Protocol, cast
+from uuid import UUID
+
+from sqlalchemy.ext.asyncio import create_async_engine
+
 from crawling_mcp.adapters.auth.example_login import ExampleLoginAdapter
 from crawling_mcp.adapters.auth.no_auth import NoAuthAdapter
 from crawling_mcp.adapters.auth.registry import AuthRegistry
@@ -18,8 +23,12 @@ from crawling_mcp.adapters.extractors.generic import GenericExtractor
 from crawling_mcp.adapters.extractors.registry import ExtractorRegistry
 from crawling_mcp.adapters.storage.file_repository import FileRepository
 from crawling_mcp.adapters.storage.memory_repository import InMemoryRepository
+from crawling_mcp.adapters.storage.monitoring_memory import InMemoryMonitoringStore
+from crawling_mcp.adapters.storage.postgres import PostgresCrawlRepository, PostgresMonitoringStore
 from crawling_mcp.application.auth_service import AuthService
 from crawling_mcp.application.crawl_service import CrawlService
+from crawling_mcp.application.monitoring_query_service import MonitoringQueryService
+from crawling_mcp.application.monitoring_service import MonitoringService
 from crawling_mcp.domain.models import (
     CrawlLimits,
     CrawlRequest,
@@ -28,13 +37,28 @@ from crawling_mcp.domain.models import (
     ScrapePageRequest,
     SupportedSite,
 )
+from crawling_mcp.domain.monitoring import (
+    ConfigureTargetRequest,
+    CrawlChange,
+    CrawlChangeDetail,
+    CrawlJobSummary,
+    CrawlTarget,
+    MonitoringRunResult,
+)
 from crawling_mcp.infrastructure.artifacts import FailureArtifactWriter
 from crawling_mcp.infrastructure.browser import BrowserManager
 from crawling_mcp.infrastructure.config import Settings
 from crawling_mcp.infrastructure.egress_proxy import SafeEgressProxy
 from crawling_mcp.infrastructure.robots import RobotsTxtChecker
 from crawling_mcp.infrastructure.security import UrlSecurityValidator
+from crawling_mcp.ports.monitoring import MonitoringUnitOfWorkFactory
 from crawling_mcp.ports.repository import CrawlRepository
+
+
+class MonitoringStore(MonitoringUnitOfWorkFactory, Protocol):
+    """Unit-of-work factory with process lifecycle ownership."""
+
+    async def close(self) -> None: ...
 
 
 class ApplicationContainer:
@@ -50,6 +74,9 @@ class ApplicationContainer:
         extractor_registry: ExtractorRegistry,
         auth_service: AuthService,
         crawl_service: CrawlService,
+        monitoring_store: MonitoringStore,
+        monitoring_service: MonitoringService,
+        monitoring_query_service: MonitoringQueryService,
     ) -> None:
         self.settings = settings
         self.egress_proxy = egress_proxy
@@ -58,6 +85,9 @@ class ApplicationContainer:
         self.extractor_registry = extractor_registry
         self.auth_service = auth_service
         self.crawl_service = crawl_service
+        self.monitoring_store = monitoring_store
+        self.monitoring_service = monitoring_service
+        self.monitoring_query_service = monitoring_query_service
         self._started = False
 
     async def start(self) -> None:
@@ -78,10 +108,13 @@ class ApplicationContainer:
             await self.crawl_service.close()
         finally:
             try:
-                await self.browser.close()
+                await self.monitoring_store.close()
             finally:
-                await self.egress_proxy.close()
-                self._started = False
+                try:
+                    await self.browser.close()
+                finally:
+                    await self.egress_proxy.close()
+                    self._started = False
 
     async def scrape_page(self, request: ScrapePageRequest) -> PageItem:
         """Delegate one-page collection to the application service."""
@@ -107,6 +140,30 @@ class ApplicationContainer:
             )
             for domain in sorted(set(auth) | set(extractors))
         ]
+
+    async def list_crawl_targets(self, *, enabled: bool | None, limit: int) -> list[CrawlTarget]:
+        return await self.monitoring_query_service.list_targets(enabled=enabled, limit=limit)
+
+    async def configure_crawl_target(self, request: ConfigureTargetRequest) -> CrawlTarget:
+        return await self.monitoring_query_service.configure_target(request)
+
+    async def run_crawl_target(self, target_id: UUID) -> MonitoringRunResult:
+        return await self.monitoring_query_service.run_target(target_id)
+
+    async def get_crawl_status(
+        self, *, target_id: UUID | None, limit: int
+    ) -> list[CrawlJobSummary]:
+        return await self.monitoring_query_service.get_crawl_status(
+            target_id=target_id, limit=limit
+        )
+
+    async def get_recent_changes(self, *, target_id: UUID | None, limit: int) -> list[CrawlChange]:
+        return await self.monitoring_query_service.get_recent_changes(
+            target_id=target_id, limit=limit
+        )
+
+    async def get_change_detail(self, change_id: UUID) -> CrawlChangeDetail | None:
+        return await self.monitoring_query_service.get_change_detail(change_id)
 
 
 def build_container(settings: Settings | None = None) -> ApplicationContainer:
@@ -136,10 +193,17 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
             extractors.register(profile.domain, ExampleExtractor())
             navigation.register(profile.domain, ExampleNavigationAdapter())
     repository: CrawlRepository
+    monitoring_store: MonitoringStore
     if configured.repository == "memory":
         repository = InMemoryRepository()
+        monitoring_store = cast(MonitoringStore, InMemoryMonitoringStore())
+    elif configured.repository == "postgres":
+        engine = create_async_engine(configured.postgres_dsn)
+        repository = PostgresCrawlRepository(engine, dispose_engine=False)
+        monitoring_store = cast(MonitoringStore, PostgresMonitoringStore(engine))
     else:
         repository = FileRepository(configured.data_dir / "results")
+        monitoring_store = cast(MonitoringStore, InMemoryMonitoringStore())
     browser = BrowserManager(
         headless=configured.browser_headless,
         max_contexts=configured.browser_max_contexts,
@@ -195,6 +259,16 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
             max_concurrency=configured.max_concurrency_limit,
         ),
     )
+    monitoring_service = MonitoringService(
+        crawler=crawl_service,
+        uow_factory=monitoring_store,
+        retry_base_seconds=configured.worker_retry_base_seconds,
+        retry_max_seconds=configured.worker_retry_max_seconds,
+    )
+    monitoring_query_service = MonitoringQueryService(
+        uow_factory=monitoring_store,
+        monitoring=monitoring_service,
+    )
     return ApplicationContainer(
         settings=configured,
         egress_proxy=egress_proxy,
@@ -203,4 +277,15 @@ def build_container(settings: Settings | None = None) -> ApplicationContainer:
         extractor_registry=extractors,
         auth_service=auth_service,
         crawl_service=crawl_service,
+        monitoring_store=monitoring_store,
+        monitoring_service=monitoring_service,
+        monitoring_query_service=monitoring_query_service,
     )
+
+
+def build_worker_container(settings: Settings | None = None) -> ApplicationContainer:
+    """Build a worker process graph that shares durable PostgreSQL state with MCP."""
+    configured = settings or Settings()
+    if configured.repository != "postgres":
+        raise ValueError("crawler worker requires repository=postgres")
+    return build_container(configured)

@@ -232,6 +232,9 @@ class InMemoryMonitoringStore:
     async def commit(self) -> None:
         """In-memory writes are immediately visible."""
 
+    async def close(self) -> None:
+        """Release in-memory resources."""
+
     def __call__(self) -> InMemoryMonitoringStore:
         """Act as a unit-of-work factory for application tests."""
         return self
