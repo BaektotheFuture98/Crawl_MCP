@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from crawling_mcp.domain.enums import CrawlJobStatus, CrawlMode
 from crawling_mcp.domain.models import CrawlRequest, utc_now
@@ -42,6 +42,9 @@ class CrawlTarget(BaseModel):
     next_retry_at: datetime | None = None
     lease_owner: str | None = None
     lease_expires_at: datetime | None = None
+    discovery_watermark_at: datetime | None = None
+    discovery_lag_seconds: int = Field(default=30, ge=0, le=86_400)
+    discovery_overlap_seconds: int = Field(default=300, ge=0, le=604_800)
 
     def is_due(self, now: datetime) -> bool:
         if not self.enabled:
@@ -96,6 +99,8 @@ class CrawlTargetCreate(BaseModel):
     respect_robots_txt: bool = True
     request_delay_seconds: float = Field(default=0.5, ge=0, le=60)
     remove_tracking_parameters: bool = True
+    discovery_lag_seconds: int = Field(default=30, ge=0, le=86_400)
+    discovery_overlap_seconds: int = Field(default=300, ge=0, le=604_800)
 
 
 class ConfigureTargetRequest(BaseModel):
@@ -109,6 +114,8 @@ class ConfigureTargetRequest(BaseModel):
     auth_profile: str | None = Field(default=None, min_length=1, max_length=128)
     max_pages: int | None = Field(default=None, ge=1, le=500)
     max_depth: int | None = Field(default=None, ge=0, le=10)
+    discovery_lag_seconds: int | None = Field(default=None, ge=0, le=86_400)
+    discovery_overlap_seconds: int | None = Field(default=None, ge=0, le=604_800)
 
 
 class CrawlRun(BaseModel):
@@ -147,3 +154,19 @@ class MonitoringRunResult(BaseModel):
     @property
     def changed_articles(self) -> int:
         return self.new_articles + self.updated_articles
+
+
+class CollectionResult(BaseModel):
+    target_id: UUID
+    crawl_run_id: UUID
+    visited_pages: int = 0
+    discovered_articles: int = 0
+    inserted_articles: int = 0
+    duplicate_articles: int = 0
+    failed_pages: int = 0
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> CollectionResult:
+        if self.discovered_articles != self.inserted_articles + self.duplicate_articles:
+            raise ValueError("discovered articles must equal inserted plus duplicate articles")
+        return self

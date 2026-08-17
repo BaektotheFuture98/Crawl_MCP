@@ -3,8 +3,11 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import pytest
+from pydantic import ValidationError
+
 from crawling_mcp.domain.enums import CrawlMode
-from crawling_mcp.domain.monitoring import CrawlTarget
+from crawling_mcp.domain.monitoring import CollectionResult, CrawlTarget
 
 
 def target(**updates: object) -> CrawlTarget:
@@ -52,3 +55,24 @@ def test_exponential_retry_delay_is_capped() -> None:
 
     assert crawl_target.retry_delay_seconds(base_seconds=30, max_seconds=3600) == 3600
     assert target(failure_count=1).retry_delay_seconds(base_seconds=30, max_seconds=3600) == 30
+
+
+def test_collection_result_enforces_discovery_counter_invariant() -> None:
+    result = CollectionResult(
+        target_id=uuid4(),
+        crawl_run_id=uuid4(),
+        discovered_articles=3,
+        inserted_articles=1,
+        duplicate_articles=2,
+    )
+
+    assert result.discovered_articles == result.inserted_articles + result.duplicate_articles
+
+    with pytest.raises(ValidationError):
+        CollectionResult(
+            target_id=uuid4(),
+            crawl_run_id=uuid4(),
+            discovered_articles=3,
+            inserted_articles=1,
+            duplicate_articles=1,
+        )
