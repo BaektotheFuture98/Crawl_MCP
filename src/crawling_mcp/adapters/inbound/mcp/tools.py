@@ -232,16 +232,14 @@ def register_tools(server: FastMCP, application: McpApplication) -> None:
             return _error_payload(NavigationError(reason="internal_error"))
 
     @server.tool()
-    async def get_recent_article_discoveries(
+    async def get_recent_articles(
         target_id: str | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
         """Return bounded newly published article discoveries without article content."""
         try:
             parsed_id = UUID(target_id) if target_id else None
-            discoveries = await application.get_recent_article_discoveries(
-                target_id=parsed_id, limit=limit
-            )
+            discoveries = await application.get_recent_articles(target_id=parsed_id, limit=limit)
             return {
                 "count": len(discoveries),
                 "articles": [item.model_dump(mode="json") for item in discoveries],

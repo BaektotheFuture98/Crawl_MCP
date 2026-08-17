@@ -12,7 +12,8 @@
 - 기준은 기사 수정 시각이 아니라 `published_at`입니다.
 - target 등록 이전의 과거 기사 전체를 backfill하지 않습니다.
 - `start <= published_at < end`인 기사만 수집합니다.
-- `published_at`이 없거나 신뢰할 수 없는 후보는 저장하지 않습니다.
+- `published_at`이 없거나 timezone offset이 없는 후보는 신뢰할 수 없는 시각으로 보고
+  저장하지 않습니다.
 - canonical URL이 같은 기사는 전체 target에서 하나의 `ARTICLE`만 사용합니다.
 - 이미 저장된 URL을 다시 보더라도 기사 본문을 수정하지 않습니다.
 - `(target_id, article_id)` 관계는 `ARTICLE_DISCOVERY`에 한 번만 기록합니다.
@@ -162,8 +163,8 @@ Worker도 별도로 실행해야 합니다.
 ## 사용 예: 뉴스 사이트 target 등록
 
 아래는 `https://www.donga.com/news`를 예로 든 요청입니다. 실제 수집 권한, robots.txt,
-사이트 이용약관을 먼저 확인해야 합니다. 사이트 HTML이나 JSON-LD에 유효한 발행 시각이
-없으면 해당 후보는 저장되지 않습니다.
+사이트 이용약관을 먼저 확인해야 합니다. 사이트 HTML이나 JSON-LD에 timezone offset을
+포함한 유효한 발행 시각이 없으면 해당 후보는 저장되지 않습니다.
 
 ### 1. target 생성
 
@@ -212,7 +213,7 @@ lease를 사용하므로 Worker와 동시에 같은 target을 중복 실행하�
 
 ### 3. 최근 발견 기사 조회
 
-`get_recent_article_discoveries`:
+`get_recent_articles`:
 
 ```json
 {"target_id": "019c...", "limit": 20}
@@ -246,7 +247,7 @@ lease를 사용하므로 Worker와 동시에 같은 target을 중복 실행하�
 - `list_crawl_targets`: target ID, 설정, schedule, watermark 조회
 - `run_crawl_target`: target 즉시 실행
 - `get_crawl_status`: 최근 실행 및 discovery counter 조회
-- `get_recent_article_discoveries`: 최근 target/article 발견 관계 조회
+- `get_recent_articles`: 최근 target/article 발견 관계 조회
 - `get_article`: 선택한 기사 한 건의 전체 본문 조회
 
 ## 동작 과정
@@ -257,7 +258,7 @@ lease를 사용하므로 Worker와 동시에 같은 target을 중복 실행하�
 4. 실행 중 lease를 주기의 약 1/3 간격으로 갱신합니다.
 5. `CrawlService`가 HTTP를 우선 사용하고 필요할 때 Playwright로 fallback합니다.
 6. `ArticleExtractor`가 JSON-LD, OpenGraph, semantic article에서 후보를 추출합니다.
-7. `published_at`이 윈도우 밖이거나 없는 후보는 건너뜁니다.
+7. `published_at`이 윈도우 밖이거나 timezone이 없으면 건너뜁니다.
 8. URL을 정규화하고 `ARTICLE`을 conflict-safe insert합니다.
 9. `(target_id, article_id)`를 `ARTICLE_DISCOVERY`에 멱등 기록합니다.
 10. 현재 lease owner만 `CRAWL_RUN` 완료와 watermark 전진을 commit할 수 있습니다.

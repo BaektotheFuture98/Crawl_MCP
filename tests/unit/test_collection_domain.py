@@ -55,13 +55,13 @@ def test_window_uses_previous_watermark_and_clamps_inverted_window() -> None:
     assert window.start == window.end == watermark - timedelta(seconds=60)
 
 
-def test_collection_window_is_start_inclusive_end_exclusive_and_normalizes_naive_utc() -> None:
+def test_collection_window_is_start_inclusive_end_exclusive_and_rejects_naive_time() -> None:
     start = datetime(2026, 8, 10, 1, 0, tzinfo=UTC)
     end = start + timedelta(hours=1)
     window = CollectionWindow(start=start, end=end)
 
     assert window.contains(start)
-    assert window.contains(datetime(2026, 8, 10, 1, 30))
+    assert not window.contains(datetime(2026, 8, 10, 1, 30))
     assert not window.contains(end)
     assert not window.contains(None)
 

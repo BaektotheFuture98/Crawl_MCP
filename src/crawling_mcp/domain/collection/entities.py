@@ -25,7 +25,7 @@ class CollectionWindow(BaseModel):
         return self
 
     def contains(self, published_at: datetime | None) -> bool:
-        if published_at is None:
+        if published_at is None or published_at.tzinfo is None:
             return False
         value = as_utc(published_at)
         return as_utc(self.start) <= value < as_utc(self.end)

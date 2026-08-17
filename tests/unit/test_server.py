@@ -31,7 +31,7 @@ async def test_server_registers_public_tools() -> None:
         "crawl_site",
         "get_article",
         "get_crawl_status",
-        "get_recent_article_discoveries",
+        "get_recent_articles",
         "list_crawl_targets",
         "list_supported_sites",
         "run_crawl_target",

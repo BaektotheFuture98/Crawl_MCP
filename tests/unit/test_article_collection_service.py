@@ -10,6 +10,7 @@ from crawling_mcp.adapters.outbound.extraction.articles import ArticleExtractorR
 from crawling_mcp.adapters.outbound.persistence.monitoring_memory import InMemoryMonitoringStore
 from crawling_mcp.application.article_collection_service import (
     ArticleCollectionService,
+    IncompleteCollectionError,
     LeaseLostError,
 )
 from crawling_mcp.domain.articles import ArticleCandidate
@@ -61,6 +62,14 @@ class BlockingRunner(FakeRunner):
         self.started.set()
         await self.release.wait()
         return await super().crawl_site(request, execution=execution)
+
+
+class PartialFailureRunner(FakeRunner):
+    async def crawl_site(
+        self, request: CrawlRequest, *, execution: CrawlExecution | None = None
+    ) -> CrawlResult:
+        result = await super().crawl_site(request, execution=execution)
+        return result.model_copy(update={"failed_pages": 1})
 
 
 class MutableClock:
@@ -210,6 +219,26 @@ async def test_failed_target_uses_backoff_without_advancing_watermark() -> None:
     assert stored.failure_count == 1
     assert stored.next_retry_at == now + timedelta(seconds=30)
     assert stored.discovery_watermark_at is None
+
+
+@pytest.mark.asyncio
+async def test_partial_page_failure_does_not_advance_watermark() -> None:
+    now = datetime(2026, 8, 10, 1, 10, tzinfo=UTC)
+    clock = MutableClock(now)
+    store = InMemoryMonitoringStore()
+    async with store() as uow:
+        target = await uow.targets.create(
+            CrawlTargetCreate(url="https://example.com/partial", interval_seconds=60)
+        )
+
+    with pytest.raises(IncompleteCollectionError):
+        await service(store, PartialFailureRunner(), clock, []).run_target(target.id, force=True)
+
+    async with store() as uow:
+        stored = await uow.targets.get(target.id)
+        runs = await uow.runs.latest(target_id=target.id)
+    assert stored is not None and stored.discovery_watermark_at is None
+    assert runs[0].failed_pages == 1
 
 
 class TakeoverRunner(FakeRunner):

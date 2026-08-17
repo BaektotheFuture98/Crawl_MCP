@@ -228,5 +228,46 @@ async def test_article_discovery_migration_preserves_relationship_run_and_waterm
         )
         assert tuple(run) == (6, 2, 4)
         assert watermark == datetime(2026, 8, 17, 1, 30, tzinfo=UTC)
+
+        await run_alembic("downgrade", "20260817_02")
+        engine = create_async_engine(_DSN)
+        try:
+            async with engine.connect() as connection:
+                legacy = (
+                    await connection.execute(
+                        sa.text(
+                            "SELECT target_id, article_id, url, first_seen_at, "
+                            "last_seen_at, last_change_type FROM article_crawl_state"
+                        )
+                    )
+                ).one()
+                legacy_run = (
+                    await connection.execute(
+                        sa.text(
+                            "SELECT new_articles, updated_articles, unchanged_articles "
+                            "FROM crawl_run"
+                        )
+                    )
+                ).one()
+                constraints = await connection.run_sync(
+                    lambda sync_connection: (
+                        sa.inspect(sync_connection).get_pk_constraint("article_crawl_state"),
+                        sa.inspect(sync_connection).get_unique_constraints("article_crawl_state"),
+                    )
+                )
+        finally:
+            await engine.dispose()
+
+        assert legacy.target_id == target_id
+        assert legacy.article_id == article_id
+        assert legacy.url == "https://example.com/migrated-article"
+        assert legacy.first_seen_at == legacy.last_seen_at == observed_at
+        assert legacy.last_change_type == "NEW"
+        assert tuple(legacy_run) == (2, 0, 4)
+        primary_key, unique_constraints = constraints
+        assert primary_key["constrained_columns"] == ["target_id", "article_id"]
+        assert any(
+            constraint["column_names"] == ["target_id", "url"] for constraint in unique_constraints
+        )
     finally:
         await run_alembic("upgrade", "head")

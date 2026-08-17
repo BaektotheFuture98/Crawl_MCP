@@ -67,7 +67,7 @@ class CollectionQueryService:
                 limit=min(max(limit, 1), 100),
             )
 
-    async def get_recent_article_discoveries(
+    async def get_recent_articles(
         self, *, target_id: UUID | None = None, limit: int = 50
     ) -> list[ArticleDiscoverySummary]:
         async with self._uow_factory() as uow:

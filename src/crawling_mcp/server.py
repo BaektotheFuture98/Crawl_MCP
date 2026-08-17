@@ -31,7 +31,7 @@ class CrawlingFastMCP(FastMCP):
                 "configure_crawl_target",
                 "run_crawl_target",
                 "get_crawl_status",
-                "get_recent_article_discoveries",
+                "get_recent_articles",
                 "get_article",
             }:
                 raise

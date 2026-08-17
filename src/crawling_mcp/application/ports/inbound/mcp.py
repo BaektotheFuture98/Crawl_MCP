@@ -39,7 +39,7 @@ class McpApplication(Protocol):
 
     async def get_crawl_status(self, *, target_id: UUID | None, limit: int) -> list[CrawlRun]: ...
 
-    async def get_recent_article_discoveries(
+    async def get_recent_articles(
         self, *, target_id: UUID | None, limit: int
     ) -> list[ArticleDiscoverySummary]: ...
 

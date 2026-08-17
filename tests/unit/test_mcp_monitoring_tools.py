@@ -56,7 +56,7 @@ class MonitoringApplication:
             )
         ]
 
-    async def get_recent_article_discoveries(
+    async def get_recent_articles(
         self, *, target_id: UUID | None, limit: int
     ) -> list[ArticleDiscoverySummary]:
         return [
@@ -92,7 +92,7 @@ async def test_recent_article_discoveries_and_status_do_not_return_full_content(
     application = MonitoringApplication()
     register_tools(server, application)
 
-    recent = structured(await server.call_tool("get_recent_article_discoveries", {"limit": 10}))
+    recent = structured(await server.call_tool("get_recent_articles", {"limit": 10}))
     status = structured(await server.call_tool("get_crawl_status", {}))
 
     assert recent["count"] == 1

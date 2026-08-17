@@ -89,7 +89,7 @@ async def test_discovery_summary_excludes_content_and_article_detail_is_explicit
             )
         )
 
-    recent = await service.get_recent_article_discoveries(target_id=target.id, limit=1)
+    recent = await service.get_recent_articles(target_id=target.id, limit=1)
     status = await service.get_crawl_status(target_id=target.id, limit=10)
     detail = await service.get_article(insertion.article.id)
 

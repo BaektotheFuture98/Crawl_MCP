@@ -19,7 +19,7 @@
 - `discovered/inserted/duplicate` run counter와 invariant 도입
 - 성공한 현재 lease owner만 run 완료와 watermark 전진 가능
 - stale run 복구, heartbeat, retry/backoff, due target `SKIP LOCKED` 유지
-- `get_recent_article_changes`를 `get_recent_article_discoveries`로 교체
+- `get_recent_article_changes`를 `get_recent_articles`로 교체
 - MCP target 설정에 discovery lag/overlap 노출
 - Domain/Application/Adapters/Bootstrap 레이어로 패키지 재배치
 - Port를 `application/ports/inbound|outbound`로 이동
@@ -51,7 +51,7 @@ uv run ruff format --check .
 uv run mypy src/crawling_mcp
   passed (81 source files)
 uv run pytest -q
-  153 passed, 26 deselected
+  154 passed, 26 deselected
 uv build
   source distribution and wheel built
 docker compose config --quiet

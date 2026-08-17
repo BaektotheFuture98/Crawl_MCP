@@ -26,6 +26,14 @@ class LeaseLostError(RuntimeError):
     """Raised when a worker no longer owns the target it was processing."""
 
 
+class IncompleteCollectionError(RuntimeError):
+    """Raised when any page or extraction failed inside a discovery window."""
+
+    def __init__(self, failed_pages: int) -> None:
+        super().__init__(f"collection had {failed_pages} failed page(s)")
+        self.failed_pages = failed_pages
+
+
 class ArticleCollectionService:
     """Collect newly published articles through an owner-fenced discovery window."""
 
@@ -178,6 +186,8 @@ class ArticleCollectionService:
                 raise LeaseLostError("target lease was lost during crawling")
             completed_at = self._clock()
             failed_pages = crawl_result.failed_pages + extraction_failures
+            if failed_pages:
+                raise IncompleteCollectionError(failed_pages)
             completed = run.model_copy(
                 update={
                     "status": CrawlJobStatus.COMPLETED,
@@ -259,7 +269,7 @@ class ArticleCollectionService:
                     run.model_copy(
                         update={
                             "status": CrawlJobStatus.FAILED,
-                            "failed_pages": 1,
+                            "failed_pages": getattr(error, "failed_pages", 1),
                             "completed_at": failed_at,
                             "error": type(error).__name__,
                         }

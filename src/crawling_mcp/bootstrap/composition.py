@@ -169,10 +169,10 @@ class ApplicationContainer:
             target_id=target_id, limit=limit
         )
 
-    async def get_recent_article_discoveries(
+    async def get_recent_articles(
         self, *, target_id: UUID | None, limit: int
     ) -> list[ArticleDiscoverySummary]:
-        return await self.collection_query_service.get_recent_article_discoveries(
+        return await self.collection_query_service.get_recent_articles(
             target_id=target_id, limit=limit
         )
 
