@@ -9,10 +9,10 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import TextContent
 
-from crawling_mcp.adapters.mcp.tools import register_tools, transport_validation_payload
+from crawling_mcp.adapters.inbound.mcp.tools import register_tools, transport_validation_payload
 from crawling_mcp.bootstrap import ApplicationContainer, build_container
-from crawling_mcp.infrastructure.config import Settings
-from crawling_mcp.infrastructure.logging import configure_logging
+from crawling_mcp.bootstrap.config import Settings
+from crawling_mcp.bootstrap.logging import configure_logging
 
 
 class CrawlingFastMCP(FastMCP):
@@ -31,7 +31,7 @@ class CrawlingFastMCP(FastMCP):
                 "configure_crawl_target",
                 "run_crawl_target",
                 "get_crawl_status",
-                "get_recent_article_changes",
+                "get_recent_article_discoveries",
                 "get_article",
             }:
                 raise

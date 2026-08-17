@@ -8,8 +8,11 @@ from typing import Any
 
 import pytest
 
-from crawling_mcp.adapters.auth.registry import AuthRegistry
-from crawling_mcp.adapters.auth.saved_session import AuthProfileStore
+from crawling_mcp.adapters.outbound.authentication.registry import AuthRegistry
+from crawling_mcp.adapters.outbound.authentication.saved_session import (
+    AuthProfileStore,
+    resolve_storage_path,
+)
 from crawling_mcp.application.auth_service import AuthService
 from crawling_mcp.domain.errors import AuthenticationFailedError, AuthenticationRequiredError
 from crawling_mcp.domain.models import AuthProfile, Credentials
@@ -111,6 +114,7 @@ def make_service(
             browser=browser,
             auth_root=auth_root,
             secrets=secrets or FakeSecrets(),
+            storage_path_resolver=resolve_storage_path,
         ),
         browser,
         state,

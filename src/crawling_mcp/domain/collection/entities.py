@@ -45,3 +45,17 @@ class ArticleDiscoveryCreate(BaseModel):
     target_id: UUID
     article_id: UUID
     discovered_at: datetime
+
+
+class ArticleDiscoverySummary(BaseModel):
+    """Bounded discovery record returned by application queries."""
+
+    model_config = ConfigDict(frozen=True)
+
+    target_id: UUID
+    article_id: UUID
+    title: str = ""
+    publisher: str | None = None
+    url: str
+    published_at: datetime | None = None
+    discovered_at: datetime

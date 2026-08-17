@@ -4,14 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from crawling_mcp.adapters.crawlee.browser_engine import BrowserCrawlerEngine
-from crawling_mcp.adapters.extractors.generic import GenericExtractor
-from crawling_mcp.adapters.extractors.registry import ExtractorRegistry
+from crawling_mcp.adapters.outbound.artifacts import FailureArtifactWriter
+from crawling_mcp.adapters.outbound.browser import BrowserManager
+from crawling_mcp.adapters.outbound.crawling.browser_engine import BrowserCrawlerEngine
+from crawling_mcp.adapters.outbound.extraction.pages.generic import GenericExtractor
+from crawling_mcp.adapters.outbound.extraction.pages.registry import ExtractorRegistry
+from crawling_mcp.adapters.outbound.network.security import UrlSecurityValidator
 from crawling_mcp.domain.errors import NavigationError
 from crawling_mcp.domain.models import CrawlContext, CrawlRequest, ValidatedUrl
-from crawling_mcp.infrastructure.artifacts import FailureArtifactWriter
-from crawling_mcp.infrastructure.browser import BrowserManager
-from crawling_mcp.infrastructure.security import UrlSecurityValidator
 
 
 class RejectRedirectValidator:

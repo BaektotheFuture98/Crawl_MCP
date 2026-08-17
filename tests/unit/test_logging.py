@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from crawling_mcp.infrastructure.logging import mask_sensitive
+from crawling_mcp.bootstrap.logging import mask_sensitive
 
 
 def test_mask_sensitive_redacts_nested_secrets_and_sensitive_query_values() -> None:

@@ -7,8 +7,8 @@ from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
-from crawling_mcp.adapters.storage.postgres.schema import metadata
-from crawling_mcp.infrastructure.config import Settings
+from crawling_mcp.adapters.outbound.persistence.postgres.schema import metadata
+from crawling_mcp.bootstrap.config import Settings
 
 config = context.config
 if config.config_file_name is not None:

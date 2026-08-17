@@ -5,6 +5,14 @@ from uuid import UUID, uuid4
 
 import structlog
 
+from crawling_mcp.application.ports.outbound.authentication import AuthContextProvider
+from crawling_mcp.application.ports.outbound.crawler import (
+    CrawlerEngine,
+    CrawlerEngineFactory,
+    UrlValidator,
+)
+from crawling_mcp.application.ports.outbound.extractor import ExtractorResolver
+from crawling_mcp.application.ports.outbound.repository import CrawlRepository
 from crawling_mcp.domain.errors import (
     AuthenticationRequiredError,
     CrawlError,
@@ -24,11 +32,7 @@ from crawling_mcp.domain.models import (
     ScrapePageRequest,
     utc_now,
 )
-from crawling_mcp.infrastructure.logging import mask_sensitive
-from crawling_mcp.ports.authentication import AuthContextProvider
-from crawling_mcp.ports.crawler import CrawlerEngine, CrawlerEngineFactory, UrlValidator
-from crawling_mcp.ports.extractor import ExtractorResolver
-from crawling_mcp.ports.repository import CrawlRepository
+from crawling_mcp.domain.redaction import mask_sensitive
 
 
 class CrawlService:

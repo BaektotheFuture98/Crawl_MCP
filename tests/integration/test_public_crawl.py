@@ -4,11 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from crawling_mcp.adapters.crawlee.http_engine import HttpCrawlerEngine
-from crawling_mcp.adapters.crawlee.router import PageRouter
-from crawling_mcp.adapters.extractors.example import ExampleExtractor
-from crawling_mcp.adapters.extractors.generic import GenericExtractor
-from crawling_mcp.adapters.extractors.registry import ExtractorRegistry
+from crawling_mcp.adapters.outbound.crawling.http_engine import HttpCrawlerEngine
+from crawling_mcp.adapters.outbound.crawling.router import PageRouter
+from crawling_mcp.adapters.outbound.extraction.pages.example import ExampleExtractor
+from crawling_mcp.adapters.outbound.extraction.pages.generic import GenericExtractor
+from crawling_mcp.adapters.outbound.extraction.pages.registry import ExtractorRegistry
+from crawling_mcp.adapters.outbound.network.security import UrlSecurityValidator
 from crawling_mcp.domain.models import (
     CrawlCacheEntry,
     CrawlContext,
@@ -17,7 +18,6 @@ from crawling_mcp.domain.models import (
     PageSnapshot,
     ScrapePageRequest,
 )
-from crawling_mcp.infrastructure.security import UrlSecurityValidator
 
 
 def make_engine() -> HttpCrawlerEngine:

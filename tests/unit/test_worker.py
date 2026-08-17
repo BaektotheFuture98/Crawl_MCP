@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from crawling_mcp.adapters.worker.scheduler import MonitoringScheduler
+from crawling_mcp.adapters.inbound.worker.scheduler import MonitoringScheduler
 
 
 class RecordingMonitoring:
@@ -63,5 +63,5 @@ def test_worker_adapter_does_not_depend_on_mcp_transport() -> None:
         for path in Path("src/crawling_mcp/adapters/worker").glob("*.py")
     )
 
-    assert "adapters.mcp" not in source
+    assert "adapters.inbound.mcp" not in source
     assert "call_tool" not in source

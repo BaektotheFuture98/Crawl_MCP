@@ -4,8 +4,8 @@ from typing import Any
 
 import pytest
 
-from crawling_mcp.adapters.auth.no_auth import NoAuthAdapter
-from crawling_mcp.adapters.auth.registry import AuthRegistry
+from crawling_mcp.adapters.outbound.authentication.no_auth import NoAuthAdapter
+from crawling_mcp.adapters.outbound.authentication.registry import AuthRegistry
 from crawling_mcp.domain.errors import UnsupportedSiteError
 
 

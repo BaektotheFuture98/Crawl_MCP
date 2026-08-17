@@ -4,9 +4,9 @@ import asyncio
 
 import pytest
 
-from crawling_mcp.adapters.extractors.generic import GenericExtractor
-from crawling_mcp.adapters.extractors.registry import ExtractorRegistry
-from crawling_mcp.adapters.storage.memory_repository import InMemoryRepository
+from crawling_mcp.adapters.outbound.extraction.pages.generic import GenericExtractor
+from crawling_mcp.adapters.outbound.extraction.pages.registry import ExtractorRegistry
+from crawling_mcp.adapters.outbound.persistence.memory_repository import InMemoryRepository
 from crawling_mcp.application.crawl_service import CrawlService
 from crawling_mcp.domain.enums import CrawlMode
 from crawling_mcp.domain.errors import CrawlLimitExceededError, NavigationError

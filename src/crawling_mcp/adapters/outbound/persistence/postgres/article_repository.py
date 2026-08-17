@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+from uuid import UUID
+
+import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from crawling_mcp.adapters.outbound.persistence.postgres.mapping import (
+    article_from_row,
+    to_article_timestamp,
+)
+from crawling_mcp.adapters.outbound.persistence.postgres.schema import article
+from crawling_mcp.domain.articles import Article, ArticleCandidate, ArticleInsertResult
+
+
+def _values(candidate: ArticleCandidate) -> dict[str, object]:
+    return {
+        "ar_title": candidate.title,
+        "ar_content": candidate.content,
+        "reporter": candidate.reporter,
+        "publisher": candidate.publisher,
+        "url": candidate.url,
+        "published_at": to_article_timestamp(candidate.published_at),
+    }
+
+
+class PostgresArticleRepository:
+    """Async adapter for the existing final ARTICLE table."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def find_by_url(self, url: str) -> Article | None:
+        row = (
+            (await self._session.execute(sa.select(article).where(article.c.url == url)))
+            .mappings()
+            .one_or_none()
+        )
+        return article_from_row(row) if row is not None else None
+
+    async def get_by_id(self, article_id: UUID) -> Article | None:
+        row = (
+            (await self._session.execute(sa.select(article).where(article.c.id == article_id)))
+            .mappings()
+            .one_or_none()
+        )
+        return article_from_row(row) if row is not None else None
+
+    async def insert_or_get(self, candidate: ArticleCandidate) -> ArticleInsertResult:
+        row = (
+            (
+                await self._session.execute(
+                    insert(article)
+                    .values(**_values(candidate))
+                    .on_conflict_do_nothing(index_elements=[article.c.url])
+                    .returning(article)
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is not None:
+            return ArticleInsertResult(article=article_from_row(row), inserted=True)
+        existing = await self.find_by_url(candidate.url)
+        if existing is None:
+            raise RuntimeError("article conflict row was not visible")
+        return ArticleInsertResult(article=existing, inserted=False)
+
+    async def update(self, article_id: UUID, candidate: ArticleCandidate) -> Article:
+        row = (
+            (
+                await self._session.execute(
+                    sa.update(article)
+                    .where(article.c.id == article_id)
+                    .values(**_values(candidate))
+                    .returning(article)
+                )
+            )
+            .mappings()
+            .one()
+        )
+        return article_from_row(row)

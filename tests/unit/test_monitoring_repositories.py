@@ -4,13 +4,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from crawling_mcp.adapters.storage.monitoring_memory import InMemoryMonitoringStore
-from crawling_mcp.domain.articles import (
-    ArticleCandidate,
-    ArticleCrawlState,
-    ArticleCrawlStateCreate,
-)
-from crawling_mcp.domain.enums import ChangeType, CrawlJobStatus
+from crawling_mcp.adapters.outbound.persistence.monitoring_memory import InMemoryMonitoringStore
+from crawling_mcp.domain.articles import ArticleCandidate
+from crawling_mcp.domain.collection import ArticleDiscoveryCreate
+from crawling_mcp.domain.enums import CrawlJobStatus
 from crawling_mcp.domain.monitoring import CrawlRunCreate, CrawlTargetCreate
 
 
@@ -90,6 +87,7 @@ async def test_stale_lease_owner_cannot_renew_or_finalize_target() -> None:
             lease_owner="worker-a",
             crawled_at=expired_at,
             next_crawl_at=expired_at + timedelta(seconds=60),
+            discovery_watermark_at=expired_at,
         )
         assert not await uow.targets.mark_failed(
             target.id,
@@ -109,40 +107,39 @@ async def test_stale_lease_owner_cannot_renew_or_finalize_target() -> None:
             lease_owner="worker-b",
             crawled_at=expired_at,
             next_crawl_at=expired_at + timedelta(seconds=60),
+            discovery_watermark_at=expired_at,
         )
         stored = await uow.targets.get(target.id)
     assert stored is not None and stored.lease_owner is None
 
 
 @pytest.mark.asyncio
-async def test_article_crud_state_and_recent_summary_keep_body_separate() -> None:
+async def test_article_and_discovery_summary_keep_body_separate() -> None:
     store = InMemoryMonitoringStore()
     now = datetime(2026, 8, 10, 1, 0, tzinfo=UTC)
     async with store() as uow:
         target = await uow.targets.create(
             CrawlTargetCreate(url="https://example.com", interval_seconds=60)
         )
-        article = await uow.articles.insert_or_get(
+        insertion = await uow.articles.insert_or_get(
             ArticleCandidate(url="https://example.com/a", title="A", content="large body")
         )
-        state = await uow.states.create(
-            ArticleCrawlStateCreate(
+        article = insertion.article
+        assert await uow.discoveries.record(
+            ArticleDiscoveryCreate(
                 article_id=article.id,
                 target_id=target.id,
-                url=article.url,
-                content_hash="a" * 64,
-                first_seen_at=now,
-                last_seen_at=now,
-                last_changed_at=now,
-                last_change_type=ChangeType.NEW,
+                discovered_at=now,
             )
         )
-        await uow.states.save(
-            ArticleCrawlState.model_validate(
-                state.model_dump() | {"last_seen_at": now + timedelta(seconds=1)}
+        assert not await uow.discoveries.record(
+            ArticleDiscoveryCreate(
+                article_id=article.id,
+                target_id=target.id,
+                discovered_at=now + timedelta(seconds=1),
             )
         )
-        recent = await uow.states.recent_changes(target_id=target.id)
+        recent = await uow.discoveries.list_recent(target_id=target.id)
 
     assert recent[0].article_id == article.id
     assert "content" not in recent[0].model_dump()
@@ -162,9 +159,11 @@ async def test_insert_or_get_reuses_article_identity_for_one_url() -> None:
             candidate.model_copy(update={"content": "a concurrent candidate"})
         )
 
-    assert first.id == second.id
+    assert first.inserted
+    assert not second.inserted
+    assert first.article.id == second.article.id
     assert len(store._articles) == 1
-    assert second.content == "body"
+    assert second.article.content == "body"
 
 
 @pytest.mark.asyncio

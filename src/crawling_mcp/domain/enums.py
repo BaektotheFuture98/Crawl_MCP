@@ -11,14 +11,6 @@ class CrawlMode(StrEnum):
     BROWSER = "browser"
 
 
-class ChangeType(StrEnum):
-    """Stable content change outcomes."""
-
-    NEW = "NEW"
-    UPDATED = "UPDATED"
-    UNCHANGED = "UNCHANGED"
-
-
 class CrawlJobStatus(StrEnum):
     """Lifecycle state for a persisted crawl job."""
 

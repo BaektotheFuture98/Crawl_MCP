@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from crawling_mcp.adapters.auth.example_login import choose_usable_locator
+from crawling_mcp.adapters.outbound.authentication.example_login import choose_usable_locator
 from crawling_mcp.domain.errors import AuthenticationFailedError
 
 

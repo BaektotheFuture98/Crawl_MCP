@@ -6,8 +6,8 @@ from uuid import uuid4
 
 import pytest
 
+from crawling_mcp.adapters.outbound.artifacts import FailureArtifactWriter
 from crawling_mcp.domain.errors import AuthenticationFailedError
-from crawling_mcp.infrastructure.artifacts import FailureArtifactWriter
 
 
 class FakePage:

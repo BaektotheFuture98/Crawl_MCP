@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from crawling_mcp.infrastructure.config import Settings
+from crawling_mcp.bootstrap.config import Settings
 
 
 def test_postgres_and_worker_settings_have_safe_defaults() -> None:

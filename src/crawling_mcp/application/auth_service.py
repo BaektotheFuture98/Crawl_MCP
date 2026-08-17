@@ -5,37 +5,22 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
-from typing import Protocol
+from typing import Any
 from uuid import UUID, uuid4
 
 import structlog
-from playwright.async_api import BrowserContext
 
-from crawling_mcp.adapters.auth.registry import AuthRegistry
-from crawling_mcp.adapters.auth.saved_session import AuthProfileStore, resolve_storage_path
+from crawling_mcp.application.ports.outbound.artifacts import FailureArtifactPort
+from crawling_mcp.application.ports.outbound.authentication import (
+    AuthenticationAdapter,
+    AuthenticationResolver,
+    AuthProfileProvider,
+    SecretProvider,
+    StoragePathResolver,
+)
+from crawling_mcp.application.ports.outbound.browser import BrowserManagerPort
 from crawling_mcp.domain.errors import AuthenticationFailedError, AuthenticationRequiredError
 from crawling_mcp.domain.models import AuthProfile, Credentials
-from crawling_mcp.ports.artifacts import FailureArtifactPort
-from crawling_mcp.ports.authentication import AuthenticationAdapter
-from crawling_mcp.ports.browser import BrowserManagerPort
-
-
-class SecretProvider(Protocol):
-    """Resolve credentials without receiving them through MCP input."""
-
-    def credentials(self, username_env: str, password_env: str) -> Credentials: ...
-
-
-class EnvironmentSecretProvider:
-    """Read site credentials from process environment variables."""
-
-    def credentials(self, username_env: str, password_env: str) -> Credentials:
-        """Resolve both configured environment variables."""
-        username = os.getenv(username_env)
-        password = os.getenv(password_env)
-        if not username or not password:
-            raise AuthenticationRequiredError(reason="credential_environment_missing")
-        return Credentials(username=username, password=password)
 
 
 class AuthService:
@@ -44,18 +29,20 @@ class AuthService:
     def __init__(
         self,
         *,
-        profiles: AuthProfileStore,
-        registry: AuthRegistry,
+        profiles: AuthProfileProvider,
+        registry: AuthenticationResolver,
         browser: BrowserManagerPort,
         auth_root: Path,
-        secrets: SecretProvider | None = None,
+        secrets: SecretProvider,
+        storage_path_resolver: StoragePathResolver,
         artifacts: FailureArtifactPort | None = None,
     ) -> None:
         self._profiles = profiles
         self._registry = registry
         self._browser = browser
         self._auth_root = auth_root
-        self._secrets = secrets or EnvironmentSecretProvider()
+        self._secrets = secrets
+        self._storage_path_resolver = storage_path_resolver
         self._artifacts = artifacts
         self._refresh_locks: dict[str, asyncio.Lock] = {}
         self._log = structlog.get_logger(__name__)
@@ -73,14 +60,14 @@ class AuthService:
                 domain=domain,
                 reason="profile_adapter_mismatch",
             )
-        storage_path = resolve_storage_path(
+        storage_path = self._storage_path_resolver(
             self._auth_root,
             Path(profile.storage_state_path),
             profile_name=name,
         )
         return profile, adapter, storage_path
 
-    async def _save_state(self, context: BrowserContext, target: Path) -> None:
+    async def _save_state(self, context: Any, target: Path) -> None:
         await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
         temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
         try:
@@ -96,7 +83,7 @@ class AuthService:
         *,
         job_id: UUID | None,
         error: AuthenticationFailedError,
-        context: BrowserContext,
+        context: Any,
         credentials: Credentials,
     ) -> None:
         if self._artifacts is None or job_id is None:
@@ -120,7 +107,7 @@ class AuthService:
     @asynccontextmanager
     async def context_for(
         self, domain: str, profile_name: str | None, job_id: UUID | None = None
-    ) -> AsyncIterator[BrowserContext]:
+    ) -> AsyncIterator[Any]:
         """Yield a public, saved-session, or freshly authenticated context."""
         if profile_name is None:
             async with self._browser.context() as public_context:
@@ -133,7 +120,7 @@ class AuthService:
                     yield saved_context
                     return
         refresh_stack = AsyncExitStack()
-        context: BrowserContext | None = None
+        context: Any | None = None
         lock = self._refresh_locks.setdefault(profile_name, asyncio.Lock())
         try:
             async with lock:

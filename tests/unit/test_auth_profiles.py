@@ -4,7 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from crawling_mcp.adapters.auth.saved_session import AuthProfileStore, resolve_storage_path
+from crawling_mcp.adapters.outbound.authentication.saved_session import (
+    AuthProfileStore,
+    resolve_storage_path,
+)
 from crawling_mcp.domain.errors import AuthenticationRequiredError
 
 

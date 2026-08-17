@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from crawling_mcp.adapters.crawlee.router import NavigationRegistry, PageRouter
+from crawling_mcp.adapters.outbound.crawling.router import NavigationRegistry, PageRouter
 from crawling_mcp.domain.enums import PageType
 from crawling_mcp.domain.models import PageSnapshot
 

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import inspect
 
-from crawling_mcp.adapters.storage.postgres import (
+from crawling_mcp.adapters.outbound.persistence.postgres import (
     article_repository,
+    discovery_repository,
     run_repository,
-    state_repository,
     target_repository,
 )
 
@@ -13,7 +13,12 @@ from crawling_mcp.adapters.storage.postgres import (
 def test_database_owned_ids_are_never_supplied_by_repository_inserts() -> None:
     sources = "\n".join(
         inspect.getsource(module)
-        for module in (article_repository, run_repository, state_repository, target_repository)
+        for module in (
+            article_repository,
+            discovery_repository,
+            run_repository,
+            target_repository,
+        )
     )
 
     assert "values(id=" not in sources
@@ -30,6 +35,6 @@ def test_due_and_manual_claims_use_postgres_skip_locked() -> None:
 
 def test_postgres_responsibilities_are_split_by_module() -> None:
     assert hasattr(article_repository, "PostgresArticleRepository")
-    assert hasattr(state_repository, "PostgresArticleCrawlStateRepository")
+    assert hasattr(discovery_repository, "PostgresArticleDiscoveryRepository")
     assert hasattr(run_repository, "PostgresCrawlRunRepository")
     assert hasattr(target_repository, "PostgresTargetRepository")

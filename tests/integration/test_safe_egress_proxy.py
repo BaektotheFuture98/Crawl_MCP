@@ -8,14 +8,14 @@ from urllib.parse import urlsplit
 import httpx
 import pytest
 
-from crawling_mcp.adapters.crawlee.browser_engine import BrowserCrawlerEngine
-from crawling_mcp.adapters.crawlee.http_engine import HttpCrawlerEngine
-from crawling_mcp.adapters.extractors.generic import GenericExtractor
-from crawling_mcp.adapters.extractors.registry import ExtractorRegistry
+from crawling_mcp.adapters.outbound.browser import BrowserManager
+from crawling_mcp.adapters.outbound.crawling.browser_engine import BrowserCrawlerEngine
+from crawling_mcp.adapters.outbound.crawling.http_engine import HttpCrawlerEngine
+from crawling_mcp.adapters.outbound.extraction.pages.generic import GenericExtractor
+from crawling_mcp.adapters.outbound.extraction.pages.registry import ExtractorRegistry
+from crawling_mcp.adapters.outbound.network.egress_proxy import SafeEgressProxy
 from crawling_mcp.domain.errors import BlockedUrlError, NavigationError
 from crawling_mcp.domain.models import CrawlContext, ScrapePageRequest, ValidatedUrl
-from crawling_mcp.infrastructure.browser import BrowserManager
-from crawling_mcp.infrastructure.egress_proxy import SafeEgressProxy
 
 
 class SelectiveValidator:

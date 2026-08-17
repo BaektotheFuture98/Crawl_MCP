@@ -4,8 +4,8 @@ from typing import Any
 
 import pytest
 
+from crawling_mcp.adapters.outbound.browser import BrowserManager
 from crawling_mcp.bootstrap import ApplicationContainer
-from crawling_mcp.infrastructure.browser import BrowserManager
 
 
 class FakeBrowser:

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from crawling_mcp.adapters.crawlee.adaptive_engine import AdaptiveCrawlerEngine
-from crawling_mcp.adapters.crawlee.browser_engine import BrowserCrawlerEngine
-from crawling_mcp.adapters.crawlee.factory import CrawlerFactory
-from crawling_mcp.adapters.crawlee.http_engine import HttpCrawlerEngine
+from crawling_mcp.adapters.outbound.crawling.adaptive_engine import AdaptiveCrawlerEngine
+from crawling_mcp.adapters.outbound.crawling.browser_engine import BrowserCrawlerEngine
+from crawling_mcp.adapters.outbound.crawling.factory import CrawlerFactory
+from crawling_mcp.adapters.outbound.crawling.http_engine import HttpCrawlerEngine
 from crawling_mcp.domain.enums import CrawlMode
 from crawling_mcp.domain.errors import AuthenticationRequiredError
 

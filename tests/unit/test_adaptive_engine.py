@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from crawling_mcp.adapters.crawlee.adaptive_engine import AdaptiveCrawlerEngine
+from crawling_mcp.adapters.outbound.crawling.adaptive_engine import AdaptiveCrawlerEngine
 from crawling_mcp.domain.errors import NavigationError
 from crawling_mcp.domain.models import (
     CrawlContext,

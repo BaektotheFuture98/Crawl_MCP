@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from crawling_mcp.adapters.storage.postgres.schema import metadata
+from crawling_mcp.adapters.outbound.persistence.postgres.schema import metadata
 
 
 def test_schema_keeps_exact_article_contract_and_only_three_state_tables() -> None:
     assert set(metadata.tables) == {
         "article",
-        "article_crawl_state",
+        "article_discovery",
         "crawl_run",
         "crawl_target",
     }
@@ -21,7 +21,7 @@ def test_schema_keeps_exact_article_contract_and_only_three_state_tables() -> No
         "url",
         "published_at",
     }
-    assert "ar_content" not in metadata.tables["article_crawl_state"].columns
+    assert "ar_content" not in metadata.tables["article_discovery"].columns
 
 
 def test_migration_validates_but_never_creates_or_drops_article() -> None:
@@ -44,14 +44,11 @@ def test_only_crawler_owned_uuid_ids_have_database_defaults() -> None:
         assert default is not None and "uuidv7()" in str(default.arg)
 
 
-def test_article_state_identity_is_scoped_to_target_and_article() -> None:
-    state = metadata.tables["article_crawl_state"]
+def test_article_discovery_identity_is_scoped_to_target_and_article() -> None:
+    discovery = metadata.tables["article_discovery"]
 
-    assert [column.name for column in state.primary_key.columns] == ["target_id", "article_id"]
-    unique_column_sets = {
-        tuple(column.name for column in constraint.columns)
-        for constraint in state.constraints
-        if constraint.__class__.__name__ == "UniqueConstraint"
-    }
-    assert ("target_id", "url") in unique_column_sets
-    assert ("url",) not in unique_column_sets
+    assert [column.name for column in discovery.primary_key.columns] == [
+        "target_id",
+        "article_id",
+    ]
+    assert set(discovery.columns.keys()) == {"target_id", "article_id", "discovered_at"}

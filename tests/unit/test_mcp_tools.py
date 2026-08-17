@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 from mcp.server.fastmcp import FastMCP
 
-from crawling_mcp.adapters.mcp.tools import register_tools
+from crawling_mcp.adapters.inbound.mcp.tools import register_tools
 from crawling_mcp.domain.enums import ErrorCode
 from crawling_mcp.domain.errors import BlockedUrlError
 from crawling_mcp.domain.models import PageItem, SupportedSite

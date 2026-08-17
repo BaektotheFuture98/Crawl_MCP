@@ -6,8 +6,8 @@ from uuid import uuid4
 
 import pytest
 
-from crawling_mcp.adapters.storage.file_repository import FileRepository
-from crawling_mcp.adapters.storage.memory_repository import InMemoryRepository
+from crawling_mcp.adapters.outbound.persistence.file_repository import FileRepository
+from crawling_mcp.adapters.outbound.persistence.memory_repository import InMemoryRepository
 from crawling_mcp.domain.enums import ErrorCode
 from crawling_mcp.domain.models import CrawlFailure, CrawlResult, PageItem
 

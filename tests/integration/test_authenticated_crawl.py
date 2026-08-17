@@ -6,14 +6,21 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from crawling_mcp.adapters.auth.example_login import ExampleLoginAdapter
-from crawling_mcp.adapters.auth.no_auth import NoAuthAdapter
-from crawling_mcp.adapters.auth.registry import AuthRegistry
-from crawling_mcp.adapters.auth.saved_session import AuthProfileStore
-from crawling_mcp.adapters.crawlee.browser_engine import BrowserCrawlerEngine
-from crawling_mcp.adapters.extractors.example import ExampleExtractor
-from crawling_mcp.adapters.extractors.generic import GenericExtractor
-from crawling_mcp.adapters.extractors.registry import ExtractorRegistry
+from crawling_mcp.adapters.outbound.artifacts import FailureArtifactWriter
+from crawling_mcp.adapters.outbound.authentication.example_login import ExampleLoginAdapter
+from crawling_mcp.adapters.outbound.authentication.no_auth import NoAuthAdapter
+from crawling_mcp.adapters.outbound.authentication.registry import AuthRegistry
+from crawling_mcp.adapters.outbound.authentication.saved_session import (
+    AuthProfileStore,
+    resolve_storage_path,
+)
+from crawling_mcp.adapters.outbound.browser import BrowserManager
+from crawling_mcp.adapters.outbound.crawling.browser_engine import BrowserCrawlerEngine
+from crawling_mcp.adapters.outbound.extraction.pages.example import ExampleExtractor
+from crawling_mcp.adapters.outbound.extraction.pages.generic import GenericExtractor
+from crawling_mcp.adapters.outbound.extraction.pages.registry import ExtractorRegistry
+from crawling_mcp.adapters.outbound.network.robots import RobotsTxtChecker
+from crawling_mcp.adapters.outbound.network.security import UrlSecurityValidator
 from crawling_mcp.application.auth_service import AuthService
 from crawling_mcp.domain.errors import AuthenticationFailedError
 from crawling_mcp.domain.models import (
@@ -25,10 +32,6 @@ from crawling_mcp.domain.models import (
     PageSnapshot,
     ScrapePageRequest,
 )
-from crawling_mcp.infrastructure.artifacts import FailureArtifactWriter
-from crawling_mcp.infrastructure.browser import BrowserManager
-from crawling_mcp.infrastructure.robots import RobotsTxtChecker
-from crawling_mcp.infrastructure.security import UrlSecurityValidator
 
 
 class FixedSecrets:
@@ -65,6 +68,7 @@ def make_auth_stack(
         browser=browser,
         auth_root=state_path.parent,
         secrets=secrets or FixedSecrets(),
+        storage_path_resolver=resolve_storage_path,
         artifacts=FailureArtifactWriter(tmp_path / "failures"),
     )
     validator = UrlSecurityValidator(allow_private_networks=True)

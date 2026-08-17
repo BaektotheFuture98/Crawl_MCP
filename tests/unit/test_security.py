@@ -5,8 +5,8 @@ from collections.abc import Sequence
 
 import pytest
 
+from crawling_mcp.adapters.outbound.network.security import UrlSecurityValidator
 from crawling_mcp.domain.errors import BlockedUrlError, InvalidUrlError
-from crawling_mcp.infrastructure.security import UrlSecurityValidator
 
 
 class StaticResolver:

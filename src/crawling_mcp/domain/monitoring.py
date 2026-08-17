@@ -125,9 +125,9 @@ class CrawlRun(BaseModel):
     target_id: UUID
     status: CrawlJobStatus
     visited_pages: int = 0
-    new_articles: int = 0
-    updated_articles: int = 0
-    unchanged_articles: int = 0
+    discovered_articles: int = 0
+    inserted_articles: int = 0
+    duplicate_articles: int = 0
     failed_pages: int = 0
     started_at: datetime = Field(default_factory=utc_now)
     completed_at: datetime | None = None
@@ -140,20 +140,6 @@ class CrawlRunCreate(BaseModel):
     target_id: UUID
     status: CrawlJobStatus = CrawlJobStatus.RUNNING
     started_at: datetime = Field(default_factory=utc_now)
-
-
-class MonitoringRunResult(BaseModel):
-    target_id: UUID
-    crawl_run_id: UUID
-    visited_pages: int = 0
-    new_articles: int = 0
-    updated_articles: int = 0
-    unchanged_articles: int = 0
-    failed_pages: int = 0
-
-    @property
-    def changed_articles(self) -> int:
-        return self.new_articles + self.updated_articles
 
 
 class CollectionResult(BaseModel):

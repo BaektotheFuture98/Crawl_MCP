@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from crawling_mcp.adapters.article_extractors.structured import StructuredArticleExtractor
+from crawling_mcp.adapters.outbound.extraction.articles.structured import StructuredArticleExtractor
 from crawling_mcp.domain.models import PageSnapshot
 
 

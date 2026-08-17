@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
+from crawling_mcp.adapters.outbound.network.egress_proxy import SafeEgressProxy
 from crawling_mcp.domain.models import ValidatedUrl
-from crawling_mcp.infrastructure.egress_proxy import SafeEgressProxy
 
 
 class UnusedValidator:

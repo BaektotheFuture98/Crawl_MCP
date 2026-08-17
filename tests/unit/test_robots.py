@@ -4,9 +4,9 @@ from typing import Any
 
 import pytest
 
+from crawling_mcp.adapters.outbound.network.robots import RobotsTxtChecker
 from crawling_mcp.domain.errors import NavigationError
 from crawling_mcp.domain.models import ValidatedUrl
-from crawling_mcp.infrastructure.robots import RobotsTxtChecker
 
 
 class AllowValidator:
@@ -43,7 +43,9 @@ class FakeClient:
 async def test_robots_checker_fails_closed_on_server_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("crawling_mcp.infrastructure.robots.httpx.AsyncClient", FakeClient)
+    monkeypatch.setattr(
+        "crawling_mcp.adapters.outbound.network.robots.httpx.AsyncClient", FakeClient
+    )
     checker = RobotsTxtChecker(validator=AllowValidator())
 
     with pytest.raises(NavigationError) as caught:
