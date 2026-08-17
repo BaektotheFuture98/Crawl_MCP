@@ -235,23 +235,24 @@ Hermes가 실제 분석 대상으로 선택한 단일 ARTICLE의 `ar_content`를
 
 ## 지속 크롤링 흐름
 
-1. Worker가 `FOR UPDATE SKIP LOCKED`와 lease를 사용해 due target을 claim합니다.
+1. Worker가 `FOR UPDATE SKIP LOCKED`로 due target을 한 건씩 실행 직전에 claim하고, 실행 중 lease를 주기의 1/3 간격으로 갱신합니다.
 2. MonitoringService가 `ARTICLE_CRAWL_STATE`의 ETag/Last-Modified와 알려진 URL을 준비합니다.
 3. 기존 CrawlService가 HTTP 우선, 필요한 경우에만 Browser fallback으로 수집합니다.
 4. HTTP 304는 parsing, extractor, hash, Browser fallback을 모두 생략합니다.
-5. ArticleExtractor가 JSON-LD → OpenGraph → semantic article 순서로 `ArticleCandidate`를 만듭니다.
+5. ArticleExtractor가 각 페이지 콜백에서 JSON-LD → OpenGraph → semantic article 순서로 `ArticleCandidate`를 만들고 즉시 저장합니다. 모니터링 경로는 전체 페이지 본문이나 `CrawlResult.items`를 메모리에 누적하지 않습니다.
 6. 제목·본문·기자·발행사·작성시간·canonical URL을 정규화하고 SHA-256으로 비교합니다.
-7. NEW는 ARTICLE INSERT, UPDATED는 ARTICLE UPDATE, UNCHANGED는 ARTICLE을 수정하지 않습니다.
-8. 모든 관찰은 본문 없는 `ARTICLE_CRAWL_STATE`의 last seen/validator를 갱신합니다.
-9. `CRAWL_RUN` 집계와 target의 다음 실행시간 또는 실패 retry/backoff를 저장합니다.
+7. canonical URL이 같은 기사는 target과 무관하게 하나의 ARTICLE을 재사용합니다. NEW는 동시 실행에도 멱등 INSERT, UPDATED는 ARTICLE UPDATE, UNCHANGED는 ARTICLE을 수정하지 않습니다.
+8. 모든 관찰은 target별 `(target_id, article_id)` `ARTICLE_CRAWL_STATE`의 last seen/validator를 독립적으로 갱신합니다.
+9. 현재 lease owner만 target과 `CRAWL_RUN`을 완료할 수 있습니다. Worker가 중단돼 남은 RUNNING 기록은 다음 claim에서 `lease_expired` 실패로 복구합니다.
+10. 성공 시 다음 실행시간을, 실패 시 retry/backoff를 저장합니다.
 
-한 target의 timeout이나 오류는 다른 target 실행을 중단하지 않습니다. Worker 종료 시 SIGINT/SIGTERM을 받아 현재 polling loop를 정리하고 Browser/PostgreSQL lifecycle을 닫습니다.
+한 target의 timeout이나 오류는 다른 target 실행을 중단하지 않습니다. lease가 만료되거나 다른 Worker에 넘어간 오래된 실행은 새 소유자의 상태를 덮어쓸 수 없습니다. Worker 종료 시 SIGINT/SIGTERM을 받아 현재 polling loop를 정리하고 Browser/PostgreSQL lifecycle을 닫습니다.
 
 ## PostgreSQL schema
 
 - `ARTICLE`: 기존 계약 그대로 `id`, `ar_title`, `ar_content`, `reporter`, `publisher`, `url`, `published_at`
 - `CRAWL_TARGET`: URL, interval, enabled, mode/auth/crawl 옵션, 실행·retry·lease 상태
-- `ARTICLE_CRAWL_STATE`: article/target, canonical URL, content hash, HTTP validator, first/last seen, 마지막 의미 있는 변경
+- `ARTICLE_CRAWL_STATE`: `(target_id, article_id)` 복합 기본 키, target별 canonical URL·content hash·HTTP validator·first/last seen·마지막 의미 있는 변경
 - `CRAWL_RUN`: target별 실행 상태와 visited/new/updated/unchanged/failed 집계
 
 ARTICLE, target, run ID는 PostgreSQL 18 `DEFAULT uuidv7()`가 생성합니다. Adapter INSERT는 ID를 전달하지 않고 `RETURNING`으로 결과만 받습니다. Migration은 기존 ARTICLE의 컬럼/default를 검증하고 중복 URL이 있으면 삭제하지 않은 채 해결 방법을 알리는 오류로 중단합니다. ARTICLE에 crawler 전용 컬럼을 추가하지 않으며 snapshot/history/raw article 테이블도 만들지 않습니다.
@@ -272,12 +273,12 @@ ARTICLE, target, run ID는 PostgreSQL 18 `DEFAULT uuidv7()`가 생성합니다. 
 
 ## 향후 분산 확장
 
-현재 scheduler는 단일 Worker polling loop지만 target claim은 PostgreSQL lease와 `SKIP LOCKED`를 사용합니다. 규모가 커지면 다음 경계만 교체합니다.
+각 Worker의 scheduler는 단일 polling loop지만 여러 Worker가 동시에 실행돼도 PostgreSQL lease, heartbeat, owner fencing과 `SKIP LOCKED`로 target을 안전하게 분배합니다. 규모가 커지면 다음 경계만 교체합니다.
 
 - `adapters/worker/scheduler.py`: PostgreSQL polling을 Kafka/queue consumer로 교체
 - `TargetRepository.claim_due`: scheduler producer 또는 dispatcher로 이동
-- lease 컬럼: queue visibility timeout/heartbeat와 결합
-- `MonitoringService`: 그대로 유지하고 idempotency key를 job/target lease에 추가
+- lease 컬럼: queue visibility timeout과 기존 heartbeat/fencing 계약을 결합
+- `MonitoringService`: 기존 target-scoped idempotency와 lease owner 계약을 유지
 - `MonitoringUnitOfWork`: outbox table을 추가해 ARTICLE/state commit과 Kafka publish를 원자화
 
 CrawlerEngine, CrawlService, ArticleExtractor, ArticlePersistenceService, MCP query adapter는 분산 Worker 전환 시 변경하지 않습니다.
