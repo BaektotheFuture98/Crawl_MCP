@@ -147,9 +147,12 @@ class _Articles:
         article = self._store._articles.get(article_id)
         return article.model_copy(deep=True) if article else None
 
-    async def insert(self, candidate: ArticleCandidate) -> Article:
-        if any(item.url == candidate.url for item in self._store._articles.values()):
-            raise ValueError("article URL already exists")
+    async def insert_or_get(self, candidate: ArticleCandidate) -> Article:
+        existing = next(
+            (item for item in self._store._articles.values() if item.url == candidate.url), None
+        )
+        if existing is not None:
+            return existing.model_copy(deep=True)
         article = Article(id=uuid4(), **candidate.model_dump())
         self._store._articles[article.id] = article
         return article.model_copy(deep=True)
@@ -164,8 +167,15 @@ class _States:
     def __init__(self, store: InMemoryMonitoringStore) -> None:
         self._store = store
 
-    async def find_by_url(self, url: str) -> ArticleCrawlState | None:
-        state = self._store._states.get(url)
+    async def find_by_url(self, target_id: UUID, url: str) -> ArticleCrawlState | None:
+        state = next(
+            (
+                item
+                for item in self._store._states.values()
+                if item.target_id == target_id and item.url == url
+            ),
+            None,
+        )
         return state.model_copy(deep=True) if state else None
 
     async def list_by_target(self, target_id: UUID) -> builtins.list[ArticleCrawlState]:
@@ -177,11 +187,11 @@ class _States:
 
     async def create(self, value: ArticleCrawlStateCreate) -> ArticleCrawlState:
         state = ArticleCrawlState.model_validate(value.model_dump())
-        self._store._states[state.url] = state
+        self._store._states[(state.target_id, state.article_id)] = state
         return state.model_copy(deep=True)
 
     async def save(self, state: ArticleCrawlState) -> ArticleCrawlState:
-        self._store._states[state.url] = state.model_copy(deep=True)
+        self._store._states[(state.target_id, state.article_id)] = state.model_copy(deep=True)
         return state.model_copy(deep=True)
 
     async def recent_changes(
@@ -242,7 +252,7 @@ class InMemoryMonitoringStore:
     def __init__(self) -> None:
         self._targets: dict[UUID, CrawlTarget] = {}
         self._articles: dict[UUID, Article] = {}
-        self._states: dict[str, ArticleCrawlState] = {}
+        self._states: dict[tuple[UUID, UUID], ArticleCrawlState] = {}
         self._runs: dict[UUID, CrawlRun] = {}
         self._lock = asyncio.Lock()
         self.targets = _Targets(self)

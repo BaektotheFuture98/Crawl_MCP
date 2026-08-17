@@ -123,7 +123,7 @@ class MonitoringService:
             for snapshot in not_modified:
                 url = normalize_url(snapshot.url, remove_tracking=True)
                 async with self._uow_factory() as uow:
-                    state = await uow.states.find_by_url(url)
+                    state = await uow.states.find_by_url(target.id, url)
                     if state is None:
                         continue
                     await uow.states.save(

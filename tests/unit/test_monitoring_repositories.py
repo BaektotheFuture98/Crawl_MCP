@@ -61,7 +61,7 @@ async def test_article_crud_state_and_recent_summary_keep_body_separate() -> Non
         target = await uow.targets.create(
             CrawlTargetCreate(url="https://example.com", interval_seconds=60)
         )
-        article = await uow.articles.insert(
+        article = await uow.articles.insert_or_get(
             ArticleCandidate(url="https://example.com/a", title="A", content="large body")
         )
         state = await uow.states.create(
@@ -88,6 +88,22 @@ async def test_article_crud_state_and_recent_summary_keep_body_separate() -> Non
     async with store() as uow:
         stored = await uow.articles.get_by_id(article.id)
     assert stored is not None and stored.content == "large body"
+
+
+@pytest.mark.asyncio
+async def test_insert_or_get_reuses_article_identity_for_one_url() -> None:
+    store = InMemoryMonitoringStore()
+    candidate = ArticleCandidate(url="https://example.com/a", title="A", content="body")
+
+    async with store() as uow:
+        first = await uow.articles.insert_or_get(candidate)
+        second = await uow.articles.insert_or_get(
+            candidate.model_copy(update={"content": "a concurrent candidate"})
+        )
+
+    assert first.id == second.id
+    assert len(store._articles) == 1
+    assert second.content == "body"
 
 
 @pytest.mark.asyncio

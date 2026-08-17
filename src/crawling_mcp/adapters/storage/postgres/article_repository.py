@@ -3,6 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from crawling_mcp.adapters.storage.postgres.mapping import article_from_row, to_article_timestamp
@@ -43,11 +44,15 @@ class PostgresArticleRepository:
         )
         return article_from_row(row) if row is not None else None
 
-    async def insert(self, candidate: ArticleCandidate) -> Article:
+    async def insert_or_get(self, candidate: ArticleCandidate) -> Article:
+        statement = insert(article).values(**_values(candidate))
         row = (
             (
                 await self._session.execute(
-                    sa.insert(article).values(**_values(candidate)).returning(article)
+                    statement.on_conflict_do_update(
+                        index_elements=[article.c.url],
+                        set_={"url": statement.excluded.url},
+                    ).returning(article)
                 )
             )
             .mappings()
