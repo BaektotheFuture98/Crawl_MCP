@@ -13,7 +13,7 @@ from crawling_mcp.domain.articles import (
     ArticleCrawlState,
     ArticleCrawlStateCreate,
 )
-from crawling_mcp.domain.enums import ChangeType
+from crawling_mcp.domain.enums import ChangeType, CrawlJobStatus
 from crawling_mcp.domain.monitoring import CrawlRun, CrawlRunCreate, CrawlTarget, CrawlTargetCreate
 
 
@@ -95,10 +95,44 @@ class _Targets:
         self._store._targets[target.id] = leased
         return leased
 
-    async def mark_succeeded(
-        self, target_id: UUID, *, crawled_at: datetime, next_crawl_at: datetime
-    ) -> None:
+    async def renew_lease(
+        self,
+        target_id: UUID,
+        *,
+        lease_owner: str,
+        now: datetime,
+        lease_seconds: int,
+    ) -> bool:
         target = self._store._targets[target_id]
+        if (
+            target.lease_owner != lease_owner
+            or target.lease_expires_at is None
+            or target.lease_expires_at <= now
+        ):
+            return False
+        self._store._targets[target_id] = target.model_copy(
+            update={
+                "lease_expires_at": now + timedelta(seconds=lease_seconds),
+                "updated_at": now,
+            }
+        )
+        return True
+
+    async def mark_succeeded(
+        self,
+        target_id: UUID,
+        *,
+        lease_owner: str,
+        crawled_at: datetime,
+        next_crawl_at: datetime,
+    ) -> bool:
+        target = self._store._targets[target_id]
+        if (
+            target.lease_owner != lease_owner
+            or target.lease_expires_at is None
+            or target.lease_expires_at <= crawled_at
+        ):
+            return False
         self._store._targets[target_id] = target.model_copy(
             update={
                 "last_crawled_at": crawled_at,
@@ -112,16 +146,24 @@ class _Targets:
                 "updated_at": crawled_at,
             }
         )
+        return True
 
     async def mark_failed(
         self,
         target_id: UUID,
         *,
+        lease_owner: str,
         failed_at: datetime,
         error: str,
         next_retry_at: datetime,
-    ) -> None:
+    ) -> bool:
         target = self._store._targets[target_id]
+        if (
+            target.lease_owner != lease_owner
+            or target.lease_expires_at is None
+            or target.lease_expires_at <= failed_at
+        ):
+            return False
         self._store._targets[target_id] = target.model_copy(
             update={
                 "failure_count": target.failure_count + 1,
@@ -133,6 +175,7 @@ class _Targets:
                 "updated_at": failed_at,
             }
         )
+        return True
 
 
 class _Articles:
@@ -233,6 +276,30 @@ class _Runs:
     async def save(self, run: CrawlRun) -> CrawlRun:
         self._store._runs[run.id] = run.model_copy(deep=True)
         return run.model_copy(deep=True)
+
+    async def save_terminal(self, run: CrawlRun) -> bool:
+        current = self._store._runs.get(run.id)
+        if current is None or current.status is not CrawlJobStatus.RUNNING:
+            return False
+        self._store._runs[run.id] = run.model_copy(deep=True)
+        return True
+
+    async def fail_running(
+        self, target_id: UUID, *, completed_at: datetime, error: str
+    ) -> int:
+        changed = 0
+        for run_id, run in list(self._store._runs.items()):
+            if run.target_id != target_id or run.status is not CrawlJobStatus.RUNNING:
+                continue
+            self._store._runs[run_id] = run.model_copy(
+                update={
+                    "status": CrawlJobStatus.FAILED,
+                    "completed_at": completed_at,
+                    "error": error,
+                }
+            )
+            changed += 1
+        return changed
 
     async def latest(
         self, *, target_id: UUID | None = None, limit: int = 50

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
@@ -29,6 +31,10 @@ from crawling_mcp.ports.extractor import ArticleExtractorResolver
 from crawling_mcp.ports.monitoring import CrawlRunner, MonitoringUnitOfWorkFactory
 
 
+class LeaseLostError(RuntimeError):
+    """Raised when a worker no longer owns the target it was processing."""
+
+
 class MonitoringService:
     """Run claimed targets, extract articles, and persist only latest article state."""
 
@@ -43,6 +49,7 @@ class MonitoringService:
         retry_base_seconds: int = 30,
         retry_max_seconds: int = 3600,
         lease_seconds: int = 600,
+        heartbeat_interval_seconds: float | None = None,
     ) -> None:
         self._crawler = crawler
         self._article_extractors = article_extractors
@@ -52,6 +59,7 @@ class MonitoringService:
         self._retry_base_seconds = retry_base_seconds
         self._retry_max_seconds = retry_max_seconds
         self._lease_seconds = lease_seconds
+        self._heartbeat_interval_seconds = heartbeat_interval_seconds
         self._log = structlog.get_logger(__name__)
 
     async def run_target(
@@ -71,11 +79,21 @@ class MonitoringService:
             await uow.commit()
         if target is None:
             return None
-        return await self._run_claimed_target(target)
+        return await self._run_claimed_target(target, lease_seconds=self._lease_seconds)
 
-    async def _run_claimed_target(self, target: CrawlTarget) -> MonitoringRunResult:
+    async def _run_claimed_target(
+        self, target: CrawlTarget, *, lease_seconds: int
+    ) -> MonitoringRunResult:
+        lease_owner = target.lease_owner
+        if lease_owner is None:
+            raise ValueError("claimed target must have a lease owner")
         now = self._clock()
         async with self._uow_factory() as uow:
+            await uow.runs.fail_running(
+                target.id,
+                completed_at=now,
+                error="lease_expired",
+            )
             run = await uow.runs.create(CrawlRunCreate(target_id=target.id, started_at=now))
             states = await uow.states.list_by_target(target.id)
             await uow.commit()
@@ -112,10 +130,21 @@ class MonitoringService:
             url=target.url,
             crawl_mode=target.crawl_mode.value,
         )
+        lease_lost = asyncio.Event()
+        heartbeat = asyncio.create_task(
+            self._heartbeat_lease(
+                target_id=target.id,
+                lease_owner=lease_owner,
+                lease_seconds=lease_seconds,
+                lease_lost=lease_lost,
+            )
+        )
         try:
             crawl_result = await self._crawler.crawl_site(
                 target.to_crawl_request(), execution=execution
             )
+            if lease_lost.is_set():
+                raise LeaseLostError("target lease was lost during crawling")
             counters = {ChangeType.NEW: 0, ChangeType.UPDATED: 0, ChangeType.UNCHANGED: 0}
             processed_urls: set[str] = set()
             seen_at = self._clock()
@@ -188,12 +217,17 @@ class MonitoringService:
                 }
             )
             async with self._uow_factory() as uow:
-                await uow.runs.save(completed)
-                await uow.targets.mark_succeeded(
+                target_finalized = await uow.targets.mark_succeeded(
                     target.id,
+                    lease_owner=lease_owner,
                     crawled_at=completed_at,
                     next_crawl_at=completed_at + timedelta(seconds=target.interval_seconds),
                 )
+                if not target_finalized:
+                    raise LeaseLostError("target lease was lost before completion")
+                run_finalized = await uow.runs.save_terminal(completed)
+                if not run_finalized:
+                    raise LeaseLostError("crawl run was already finalized")
                 await uow.commit()
             monitoring_result = MonitoringRunResult(
                 target_id=target.id,
@@ -219,7 +253,12 @@ class MonitoringService:
             )
             return monitoring_result
         except Exception as error:
-            await self._record_failure(target, run, error)
+            await self._record_failure(
+                target,
+                run,
+                error,
+                lease_owner=lease_owner,
+            )
             self._log.error(
                 "crawl_target_failed",
                 target_id=str(target.id),
@@ -230,8 +269,19 @@ class MonitoringService:
                 error_type=type(error).__name__,
             )
             raise
+        finally:
+            heartbeat.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat
 
-    async def _record_failure(self, target: CrawlTarget, run: CrawlRun, error: Exception) -> None:
+    async def _record_failure(
+        self,
+        target: CrawlTarget,
+        run: CrawlRun,
+        error: Exception,
+        *,
+        lease_owner: str,
+    ) -> None:
         failed_at = self._clock()
         failed_target = target.model_copy(update={"failure_count": target.failure_count + 1})
         delay = failed_target.retry_delay_seconds(
@@ -239,40 +289,74 @@ class MonitoringService:
             max_seconds=self._retry_max_seconds,
         )
         async with self._uow_factory() as uow:
-            await uow.targets.mark_failed(
+            target_finalized = await uow.targets.mark_failed(
                 target.id,
+                lease_owner=lease_owner,
                 failed_at=failed_at,
                 error=type(error).__name__,
                 next_retry_at=failed_at + timedelta(seconds=delay),
             )
-            await uow.runs.save(
-                run.model_copy(
-                    update={
-                        "status": CrawlJobStatus.FAILED,
-                        "failed_pages": 1,
-                        "completed_at": failed_at,
-                        "error": type(error).__name__,
-                    }
+            if target_finalized:
+                await uow.runs.save_terminal(
+                    run.model_copy(
+                        update={
+                            "status": CrawlJobStatus.FAILED,
+                            "failed_pages": 1,
+                            "completed_at": failed_at,
+                            "error": type(error).__name__,
+                        }
+                    )
                 )
-            )
             await uow.commit()
+
+    async def _heartbeat_lease(
+        self,
+        *,
+        target_id: UUID,
+        lease_owner: str,
+        lease_seconds: int,
+        lease_lost: asyncio.Event,
+    ) -> None:
+        interval = self._heartbeat_interval_seconds
+        if interval is None:
+            interval = max(lease_seconds / 3, 0.1)
+        while True:
+            await asyncio.sleep(interval)
+            async with self._uow_factory() as uow:
+                renewed = await uow.targets.renew_lease(
+                    target_id,
+                    lease_owner=lease_owner,
+                    now=self._clock(),
+                    lease_seconds=lease_seconds,
+                )
+                await uow.commit()
+            if not renewed:
+                lease_lost.set()
+                return
 
     async def run_due_targets(
         self, *, worker_id: str, batch_size: int, lease_seconds: int
     ) -> list[MonitoringRunResult]:
-        """Claim a batch once and isolate each target failure."""
-        async with self._uow_factory() as uow:
-            targets = await uow.targets.claim_due(
-                now=self._clock(),
-                limit=batch_size,
-                lease_owner=worker_id,
-                lease_seconds=lease_seconds,
-            )
-            await uow.commit()
+        """Claim each target just before execution and isolate target failures."""
         results: list[MonitoringRunResult] = []
-        for target in targets:
+        for _ in range(batch_size):
+            async with self._uow_factory() as uow:
+                targets = await uow.targets.claim_due(
+                    now=self._clock(),
+                    limit=1,
+                    lease_owner=worker_id,
+                    lease_seconds=lease_seconds,
+                )
+                await uow.commit()
+            if not targets:
+                break
             try:
-                results.append(await self._run_claimed_target(target))
+                results.append(
+                    await self._run_claimed_target(
+                        targets[0],
+                        lease_seconds=lease_seconds,
+                    )
+                )
             except Exception:
                 continue
         return results

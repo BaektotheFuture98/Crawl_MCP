@@ -65,18 +65,33 @@ class TargetRepository(Protocol):
         force: bool,
     ) -> CrawlTarget | None: ...
 
+    async def renew_lease(
+        self,
+        target_id: UUID,
+        *,
+        lease_owner: str,
+        now: datetime,
+        lease_seconds: int,
+    ) -> bool: ...
+
     async def mark_succeeded(
-        self, target_id: UUID, *, crawled_at: datetime, next_crawl_at: datetime
-    ) -> None: ...
+        self,
+        target_id: UUID,
+        *,
+        lease_owner: str,
+        crawled_at: datetime,
+        next_crawl_at: datetime,
+    ) -> bool: ...
 
     async def mark_failed(
         self,
         target_id: UUID,
         *,
+        lease_owner: str,
         failed_at: datetime,
         error: str,
         next_retry_at: datetime,
-    ) -> None: ...
+    ) -> bool: ...
 
 
 class ArticleRepository(Protocol):
@@ -107,6 +122,12 @@ class CrawlRunRepository(Protocol):
     async def create(self, run: CrawlRunCreate) -> CrawlRun: ...
 
     async def save(self, run: CrawlRun) -> CrawlRun: ...
+
+    async def save_terminal(self, run: CrawlRun) -> bool: ...
+
+    async def fail_running(
+        self, target_id: UUID, *, completed_at: datetime, error: str
+    ) -> int: ...
 
     async def latest(
         self, *, target_id: UUID | None = None, limit: int = 50

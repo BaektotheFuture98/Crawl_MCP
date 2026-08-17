@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+from datetime import datetime
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -8,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from crawling_mcp.adapters.storage.postgres.mapping import run_from_row
 from crawling_mcp.adapters.storage.postgres.schema import crawl_run
+from crawling_mcp.domain.enums import CrawlJobStatus
 from crawling_mcp.domain.monitoring import CrawlRun, CrawlRunCreate
 
 
@@ -56,6 +58,45 @@ class PostgresCrawlRunRepository:
             .one()
         )
         return run_from_row(row)
+
+    async def save_terminal(self, run: CrawlRun) -> bool:
+        updated = await self._session.execute(
+            sa.update(crawl_run)
+            .where(
+                crawl_run.c.id == run.id,
+                crawl_run.c.status == CrawlJobStatus.RUNNING.value,
+            )
+            .values(
+                status=run.status.value,
+                visited_pages=run.visited_pages,
+                new_articles=run.new_articles,
+                updated_articles=run.updated_articles,
+                unchanged_articles=run.unchanged_articles,
+                failed_pages=run.failed_pages,
+                completed_at=run.completed_at,
+                error=run.error,
+            )
+            .returning(crawl_run.c.id)
+        )
+        return updated.scalar_one_or_none() is not None
+
+    async def fail_running(
+        self, target_id: UUID, *, completed_at: datetime, error: str
+    ) -> int:
+        updated = await self._session.execute(
+            sa.update(crawl_run)
+            .where(
+                crawl_run.c.target_id == target_id,
+                crawl_run.c.status == CrawlJobStatus.RUNNING.value,
+            )
+            .values(
+                status=CrawlJobStatus.FAILED.value,
+                completed_at=completed_at,
+                error=error,
+            )
+            .returning(crawl_run.c.id)
+        )
+        return len(updated.scalars().all())
 
     async def latest(
         self, *, target_id: UUID | None = None, limit: int = 50

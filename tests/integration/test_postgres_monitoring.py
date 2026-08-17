@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import sqlalchemy as sa
@@ -16,7 +16,7 @@ from crawling_mcp.adapters.storage.postgres import PostgresMonitoringStore
 from crawling_mcp.application.article_persistence_service import ArticlePersistenceService
 from crawling_mcp.application.monitoring_service import MonitoringService
 from crawling_mcp.domain.articles import ArticleCandidate, ArticleObservation
-from crawling_mcp.domain.enums import ChangeType
+from crawling_mcp.domain.enums import ChangeType, CrawlJobStatus
 from crawling_mcp.domain.models import (
     CrawlExecution,
     CrawlRequest,
@@ -24,7 +24,7 @@ from crawling_mcp.domain.models import (
     PageItem,
     PageSnapshot,
 )
-from crawling_mcp.domain.monitoring import CrawlTargetCreate
+from crawling_mcp.domain.monitoring import CrawlRunCreate, CrawlTargetCreate
 
 _DSN = "postgresql+asyncpg://crawler:crawler@127.0.0.1:54329/crawling"
 
@@ -211,5 +211,87 @@ async def test_concurrent_targets_share_article_but_keep_independent_state() -> 
         assert article_count == 1
         assert {row.target_id for row in state_rows} == {first_target.id, second_target.id}
         assert {row.etag for row in state_rows} == {'"a"', '"b"'}
+    finally:
+        await store.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_postgres_lease_fencing_and_stale_run_recovery() -> None:
+    require_storage_test()
+    engine = create_async_engine(_DSN)
+    store = PostgresMonitoringStore(engine)
+    try:
+        await clean(engine)
+        started_at = datetime(2026, 8, 10, tzinfo=UTC)
+        async with store() as uow:
+            target = await uow.targets.create(
+                CrawlTargetCreate(url="https://example.com/fenced", interval_seconds=60)
+            )
+            first = await uow.targets.claim(
+                target.id,
+                now=started_at,
+                lease_owner="worker-a",
+                lease_seconds=30,
+                force=True,
+            )
+            stale_run = await uow.runs.create(
+                CrawlRunCreate(target_id=target.id, started_at=started_at)
+            )
+            await uow.commit()
+        assert first is not None
+
+        reclaimed_at = started_at + timedelta(seconds=31)
+        async with store() as uow:
+            second = await uow.targets.claim(
+                target.id,
+                now=reclaimed_at,
+                lease_owner="worker-b",
+                lease_seconds=30,
+                force=True,
+            )
+            reconciled = await uow.runs.fail_running(
+                target.id,
+                completed_at=reclaimed_at,
+                error="lease_expired",
+            )
+            stale_renewed = await uow.targets.renew_lease(
+                target.id,
+                lease_owner="worker-a",
+                now=reclaimed_at,
+                lease_seconds=30,
+            )
+            stale_finalized = await uow.targets.mark_succeeded(
+                target.id,
+                lease_owner="worker-a",
+                crawled_at=reclaimed_at,
+                next_crawl_at=reclaimed_at + timedelta(seconds=60),
+            )
+            run_overwritten = await uow.runs.save_terminal(
+                stale_run.model_copy(
+                    update={
+                        "status": CrawlJobStatus.COMPLETED,
+                        "completed_at": reclaimed_at,
+                    }
+                )
+            )
+            owner_renewed = await uow.targets.renew_lease(
+                target.id,
+                lease_owner="worker-b",
+                now=reclaimed_at,
+                lease_seconds=30,
+            )
+            await uow.commit()
+
+        assert second is not None
+        assert reconciled == 1
+        assert not stale_renewed
+        assert not stale_finalized
+        assert not run_overwritten
+        assert owner_renewed
+        async with store() as uow:
+            runs = await uow.runs.latest(target_id=target.id)
+        assert runs[0].status is CrawlJobStatus.FAILED
+        assert runs[0].error == "lease_expired"
     finally:
         await store.close()

@@ -54,6 +54,67 @@ async def test_target_crud_due_claim_and_manual_lease() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stale_lease_owner_cannot_renew_or_finalize_target() -> None:
+    store = InMemoryMonitoringStore()
+    now = datetime(2026, 8, 10, 1, 0, tzinfo=UTC)
+    async with store() as uow:
+        target = await uow.targets.create(
+            CrawlTargetCreate(url="https://example.com/leased", interval_seconds=60)
+        )
+        first = await uow.targets.claim(
+            target.id,
+            now=now,
+            lease_owner="worker-a",
+            lease_seconds=30,
+            force=True,
+        )
+    assert first is not None
+    expired_at = now + timedelta(seconds=31)
+    async with store() as uow:
+        second = await uow.targets.claim(
+            target.id,
+            now=expired_at,
+            lease_owner="worker-b",
+            lease_seconds=30,
+            force=True,
+        )
+        assert second is not None
+        assert not await uow.targets.renew_lease(
+            target.id,
+            lease_owner="worker-a",
+            now=expired_at,
+            lease_seconds=30,
+        )
+        assert not await uow.targets.mark_succeeded(
+            target.id,
+            lease_owner="worker-a",
+            crawled_at=expired_at,
+            next_crawl_at=expired_at + timedelta(seconds=60),
+        )
+        assert not await uow.targets.mark_failed(
+            target.id,
+            lease_owner="worker-a",
+            failed_at=expired_at,
+            error="stale",
+            next_retry_at=expired_at + timedelta(seconds=30),
+        )
+        assert await uow.targets.renew_lease(
+            target.id,
+            lease_owner="worker-b",
+            now=expired_at,
+            lease_seconds=30,
+        )
+        assert await uow.targets.mark_succeeded(
+            target.id,
+            lease_owner="worker-b",
+            crawled_at=expired_at,
+            next_crawl_at=expired_at + timedelta(seconds=60),
+        )
+        stored = await uow.targets.get(target.id)
+    assert stored is not None and stored.lease_owner is None
+
+
+@pytest.mark.asyncio
 async def test_article_crud_state_and_recent_summary_keep_body_separate() -> None:
     store = InMemoryMonitoringStore()
     now = datetime(2026, 8, 10, 1, 0, tzinfo=UTC)
@@ -123,3 +184,33 @@ async def test_crawl_run_repository_orders_latest_status() -> None:
 
     assert first.id != second.id
     assert latest[0].id == second.id
+
+
+@pytest.mark.asyncio
+async def test_stale_running_runs_are_failed_and_cannot_be_overwritten() -> None:
+    store = InMemoryMonitoringStore()
+    now = datetime(2026, 8, 10, 1, 0, tzinfo=UTC)
+    async with store() as uow:
+        target = await uow.targets.create(
+            CrawlTargetCreate(url="https://example.com", interval_seconds=60)
+        )
+        stale = await uow.runs.create(CrawlRunCreate(target_id=target.id, started_at=now))
+        reconciled = await uow.runs.fail_running(
+            target.id,
+            completed_at=now + timedelta(seconds=60),
+            error="lease_expired",
+        )
+        overwritten = await uow.runs.save_terminal(
+            stale.model_copy(
+                update={
+                    "status": CrawlJobStatus.COMPLETED,
+                    "completed_at": now + timedelta(seconds=61),
+                }
+            )
+        )
+        latest = await uow.runs.latest(target_id=target.id)
+
+    assert reconciled == 1
+    assert not overwritten
+    assert latest[0].status is CrawlJobStatus.FAILED
+    assert latest[0].error == "lease_expired"

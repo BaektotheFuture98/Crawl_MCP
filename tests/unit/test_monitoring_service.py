@@ -66,6 +66,14 @@ class BlockingRunner(FakeRunner):
         return await super().crawl_site(request, execution=execution)
 
 
+class MutableClock:
+    def __init__(self, value: datetime) -> None:
+        self.value = value
+
+    def __call__(self) -> datetime:
+        return self.value
+
+
 def service(store: InMemoryMonitoringStore, runner: FakeRunner, now: datetime) -> MonitoringService:
     article_persistence = ArticlePersistenceService(uow_factory=store)
     extractors = ArticleExtractorRegistry(default=StructuredArticleExtractor())
@@ -158,3 +166,74 @@ async def test_manual_runs_use_lease_and_do_not_overlap() -> None:
     assert second is None
     assert completed is not None
     assert runner.calls == [target.url]
+
+
+@pytest.mark.asyncio
+async def test_due_targets_claim_next_only_after_current_finishes() -> None:
+    now = datetime(2026, 8, 10, 1, 0, tzinfo=UTC)
+    store = InMemoryMonitoringStore()
+    runner = BlockingRunner()
+    async with store() as uow:
+        first = await uow.targets.create(
+            CrawlTargetCreate(url="https://example.com/first", interval_seconds=60)
+        )
+        second = await uow.targets.create(
+            CrawlTargetCreate(url="https://example.com/second", interval_seconds=60)
+        )
+
+    task = asyncio.create_task(
+        service(store, runner, now).run_due_targets(
+            worker_id="worker-1", batch_size=2, lease_seconds=60
+        )
+    )
+    await runner.started.wait()
+    async with store() as uow:
+        first_while_running = await uow.targets.get(first.id)
+        second_while_waiting = await uow.targets.get(second.id)
+
+    assert first_while_running is not None
+    assert first_while_running.lease_owner == "worker-1"
+    assert second_while_waiting is not None
+    assert second_while_waiting.lease_owner is None
+
+    runner.release.set()
+    results = await task
+    assert [result.target_id for result in results] == [first.id, second.id]
+
+
+@pytest.mark.asyncio
+async def test_long_running_target_renews_its_lease() -> None:
+    started_at = datetime(2026, 8, 10, 1, 0, tzinfo=UTC)
+    clock = MutableClock(started_at)
+    store = InMemoryMonitoringStore()
+    runner = BlockingRunner()
+    async with store() as uow:
+        target = await uow.targets.create(
+            CrawlTargetCreate(url="https://example.com/slow", interval_seconds=60)
+        )
+    monitoring = MonitoringService(
+        crawler=runner,
+        article_extractors=ArticleExtractorRegistry(default=StructuredArticleExtractor()),
+        article_persistence=ArticlePersistenceService(uow_factory=store),
+        uow_factory=store,
+        clock=clock,
+        lease_seconds=1,
+        heartbeat_interval_seconds=0.01,
+    )
+    task = asyncio.create_task(monitoring.run_target(target.id, force=True))
+    await runner.started.wait()
+
+    clock.value = started_at + timedelta(milliseconds=750)
+    await asyncio.sleep(0.03)
+    async with store() as uow:
+        takeover = await uow.targets.claim(
+            target.id,
+            now=started_at + timedelta(milliseconds=1100),
+            lease_owner="worker-2",
+            lease_seconds=1,
+            force=True,
+        )
+
+    assert takeover is None
+    runner.release.set()
+    assert await task is not None
