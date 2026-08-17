@@ -1,19 +1,19 @@
 # 개발 진행상황
 
-마지막 갱신: 2026-08-05 (Asia/Seoul)
+마지막 갱신: 2026-08-17 (Asia/Seoul)
 
 ## 저장소와 재개 위치
 
 - 원격 저장소: `https://github.com/BaektotheFuture98/Crawl_MCP.git`
-- 현재 로컬 브랜치: `main`
-- 기본 작업 트리: `/Users/seonminbaek/openup/mcp_crawl/python-crawling-mcp`
-- feature 병합 체크포인트: `1e3222a`
+- 현재 로컬 브랜치: `feat/continuous-monitoring`
+- 격리 작업 트리: `/Users/seonminbaek/openup/mcp_crawl/python-crawling-mcp/.worktrees/continuous-monitoring`
+- 신뢰성 리팩터링 기준 커밋: `b33b378`
 - 원격 복구 브랜치: `origin/feature/crawling-mcp`
 
 재개할 때 먼저 실행한다.
 
 ```bash
-cd /Users/seonminbaek/openup/mcp_crawl/python-crawling-mcp
+cd /Users/seonminbaek/openup/mcp_crawl/python-crawling-mcp/.worktrees/continuous-monitoring
 git status --short --branch
 git log --oneline -15
 git fetch origin
@@ -41,10 +41,22 @@ git fetch origin
 - redirect 및 Chromium iframe·이미지·스크립트 등 하위 리소스의 동일 egress 정책
 - production-safe Docker Compose와 private network를 명시적으로 허용하는 test override
 - Dockerfile, `.env.example`, README, 단위·Playwright 통합 테스트
+- PostgreSQL 기반 지속 크롤링 target, run, ARTICLE과 target별 관찰 상태
+- 전역 canonical ARTICLE을 공유하면서 `(target_id, article_id)` 상태를 분리하는 멱등 저장
+- lease heartbeat, owner fencing, 중단된 RUNNING 복구와 실행 직전 단건 claim
+- page callback 안에서 추출·저장하고 모니터링 `CrawlResult.items`를 비우는 bounded-memory 처리
 
 ## 최근 Conventional Commits
 
 ```text
+a99e0ef refactor(monitoring): stream article observations
+8333b76 fix(monitoring): fence target leases
+5653673 fix(storage): isolate article state per target
+62fc3ad fix(monitoring): scope article state by target
+dcd5ebe docs: plan monitoring reliability refactor
+f6f2519 docs: design monitoring reliability refactor
+b33b378 refactor(monitoring): persist latest articles in existing ARTICLE
+2968034 docs: document continuous crawler operations
 642b7b9 docs: document crawl resource ceilings
 7abcf90 fix(artifacts): preserve concurrent failure diagnostics
 aaab84f fix(security): bound crawl resource consumption
@@ -63,25 +75,20 @@ d815863 fix(auth): serialize session refresh and preserve failures
 
 ## 최신 검증 결과
 
-2026-08-05에 병합된 로컬 `main`에서 아래 명령을 새로 실행했다.
+2026-08-17 `feat/continuous-monitoring` 격리 작업 트리에서 아래 명령을 새로 실행했다.
 
 ```text
-uv sync --locked: passed (Python 3.12.12, 77 packages audited)
 uv run ruff check .: passed
-uv run ruff format --check .: passed (83 files)
-uv run mypy src: passed (51 source files)
-uv run pytest: 99 passed, 20 deselected
-uv run pytest -m integration: 20 passed, 99 deselected
-docker compose config --quiet: passed
-docker compose test override config --quiet: passed
-docker compose build: passed
-docker compose run --rm -T mcp-server: passed (STDIO start and clean EOF shutdown)
+uv run ruff format --check .: passed (129 files)
+uv run mypy src: passed (74 source files)
+uv run pytest -q: 154 passed, 29 deselected
+uv run alembic upgrade head: passed (20260817_02 head)
+CRAWLING_MCP_RUN_STORAGE_INTEGRATION=1 uv run pytest -m integration -q: 29 passed, 154 deselected
 ```
 
-통합 테스트는 공개 수집, 로그인, 저장 세션 재사용, 만료 후 재로그인, 목록·상세 탐색,
-max pages/depth/concurrency, robots.txt와 5xx fail-closed, include/exclude·중복 제거,
-transient 5xx retry, response/link 크기 제한, 실패 artifact, redirect 및 browser subresource
-SSRF, egress byte/deadline/handler cleanup을 포함한다.
+통합 테스트는 전역 ARTICLE 재사용, target별 상태 분리, 동시 upsert, 모니터링 실행 집계,
+lease owner fencing과 중단 실행 복구뿐 아니라 공개 수집, 인증, 브라우저, egress 정책도
+함께 검증한다.
 
 ## 독립 리뷰 조치 내역
 

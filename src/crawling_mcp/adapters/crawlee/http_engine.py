@@ -139,6 +139,7 @@ class HttpCrawlerEngine:
     async def scrape(self, request: ScrapePageRequest, context: CrawlContext) -> PageSnapshot:
         """Fetch one static page with Crawlee."""
         snapshots: list[PageSnapshot] = []
+        callback_errors: list[Exception] = []
         request_queue = await RequestQueue.open(name=f"scrape-{context.job_id}")
         crawler = self._crawler(
             max_requests_per_crawl=1,
@@ -153,7 +154,11 @@ class HttpCrawlerEngine:
             snapshot = self._snapshot(crawling_context, depth=0)
             await self._validator.validate(snapshot.url)
             if snapshot.not_modified and context.not_modified_handler is not None:
-                await context.not_modified_handler(snapshot)
+                try:
+                    await context.not_modified_handler(snapshot)
+                except Exception as error:
+                    callback_errors.append(error)
+                    return
             snapshots.append(snapshot)
 
         try:
@@ -169,6 +174,8 @@ class HttpCrawlerEngine:
             )
         finally:
             await request_queue.drop()
+        if callback_errors:
+            raise callback_errors[0]
         if not snapshots:
             raise NavigationError(url=request.url, reason="no_response")
         return snapshots[0]
@@ -184,6 +191,7 @@ class HttpCrawlerEngine:
             if not await self._robots.allowed(request.start_url):
                 raise NavigationError(url=request.start_url, reason="robots_disallowed")
         result = CrawlResult(job_id=context.job_id, start_url=request.start_url)
+        callback_errors: list[Exception] = []
         policy = LinkPolicy(
             start_url=request.start_url,
             max_depth=request.max_depth,
@@ -222,15 +230,24 @@ class HttpCrawlerEngine:
             await self._validator.validate(snapshot.url)
             if snapshot.not_modified:
                 if context.not_modified_handler is not None:
-                    await context.not_modified_handler(snapshot)
+                    try:
+                        await context.not_modified_handler(snapshot)
+                    except Exception as error:
+                        callback_errors.append(error)
+                        return
                 result.visited_pages += 1
                 result.succeeded_pages += 1
                 return
             snapshot.page_type = self._router.classify(snapshot, domain=context.domain)
             items = await extractor.extract(snapshot)
             if context.page_handler is not None:
-                await context.page_handler(snapshot, items)
-            result.items.extend(items)
+                try:
+                    await context.page_handler(snapshot, items)
+                except Exception as error:
+                    callback_errors.append(error)
+                    return
+            if context.collect_items:
+                result.items.extend(items)
             result.visited_pages += 1
             result.succeeded_pages += 1
             if request.request_delay_seconds:
@@ -335,4 +352,6 @@ class HttpCrawlerEngine:
             await crawler.run(seeds)
         finally:
             await request_queue.drop()
+        if callback_errors:
+            raise callback_errors[0]
         return result

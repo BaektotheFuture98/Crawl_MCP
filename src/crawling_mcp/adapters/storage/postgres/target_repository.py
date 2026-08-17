@@ -184,11 +184,20 @@ class PostgresTargetRepository:
         return target_from_row(row)
 
     async def mark_succeeded(
-        self, target_id: UUID, *, crawled_at: datetime, next_crawl_at: datetime
-    ) -> None:
-        await self._session.execute(
+        self,
+        target_id: UUID,
+        *,
+        lease_owner: str,
+        crawled_at: datetime,
+        next_crawl_at: datetime,
+    ) -> bool:
+        updated = await self._session.execute(
             sa.update(crawl_target)
-            .where(crawl_target.c.id == target_id)
+            .where(
+                crawl_target.c.id == target_id,
+                crawl_target.c.lease_owner == lease_owner,
+                crawl_target.c.lease_expires_at > crawled_at,
+            )
             .values(
                 last_crawled_at=crawled_at,
                 next_crawl_at=next_crawl_at,
@@ -199,19 +208,49 @@ class PostgresTargetRepository:
                 lease_expires_at=None,
                 updated_at=crawled_at,
             )
+            .returning(crawl_target.c.id)
         )
+        return updated.scalar_one_or_none() is not None
+
+    async def renew_lease(
+        self,
+        target_id: UUID,
+        *,
+        lease_owner: str,
+        now: datetime,
+        lease_seconds: int,
+    ) -> bool:
+        updated = await self._session.execute(
+            sa.update(crawl_target)
+            .where(
+                crawl_target.c.id == target_id,
+                crawl_target.c.lease_owner == lease_owner,
+                crawl_target.c.lease_expires_at > now,
+            )
+            .values(
+                lease_expires_at=now + timedelta(seconds=lease_seconds),
+                updated_at=now,
+            )
+            .returning(crawl_target.c.id)
+        )
+        return updated.scalar_one_or_none() is not None
 
     async def mark_failed(
         self,
         target_id: UUID,
         *,
+        lease_owner: str,
         failed_at: datetime,
         error: str,
         next_retry_at: datetime,
-    ) -> None:
-        await self._session.execute(
+    ) -> bool:
+        updated = await self._session.execute(
             sa.update(crawl_target)
-            .where(crawl_target.c.id == target_id)
+            .where(
+                crawl_target.c.id == target_id,
+                crawl_target.c.lease_owner == lease_owner,
+                crawl_target.c.lease_expires_at > failed_at,
+            )
             .values(
                 failure_count=crawl_target.c.failure_count + 1,
                 last_error=error,
@@ -221,4 +260,6 @@ class PostgresTargetRepository:
                 lease_expires_at=None,
                 updated_at=failed_at,
             )
+            .returning(crawl_target.c.id)
         )
+        return updated.scalar_one_or_none() is not None

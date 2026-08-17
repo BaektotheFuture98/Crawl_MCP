@@ -13,7 +13,7 @@ from crawling_mcp.domain.articles import (
     ArticleCrawlState,
     ArticleCrawlStateCreate,
 )
-from crawling_mcp.domain.enums import ChangeType
+from crawling_mcp.domain.enums import ChangeType, CrawlJobStatus
 from crawling_mcp.domain.monitoring import CrawlRun, CrawlRunCreate, CrawlTarget, CrawlTargetCreate
 
 
@@ -95,10 +95,44 @@ class _Targets:
         self._store._targets[target.id] = leased
         return leased
 
-    async def mark_succeeded(
-        self, target_id: UUID, *, crawled_at: datetime, next_crawl_at: datetime
-    ) -> None:
+    async def renew_lease(
+        self,
+        target_id: UUID,
+        *,
+        lease_owner: str,
+        now: datetime,
+        lease_seconds: int,
+    ) -> bool:
         target = self._store._targets[target_id]
+        if (
+            target.lease_owner != lease_owner
+            or target.lease_expires_at is None
+            or target.lease_expires_at <= now
+        ):
+            return False
+        self._store._targets[target_id] = target.model_copy(
+            update={
+                "lease_expires_at": now + timedelta(seconds=lease_seconds),
+                "updated_at": now,
+            }
+        )
+        return True
+
+    async def mark_succeeded(
+        self,
+        target_id: UUID,
+        *,
+        lease_owner: str,
+        crawled_at: datetime,
+        next_crawl_at: datetime,
+    ) -> bool:
+        target = self._store._targets[target_id]
+        if (
+            target.lease_owner != lease_owner
+            or target.lease_expires_at is None
+            or target.lease_expires_at <= crawled_at
+        ):
+            return False
         self._store._targets[target_id] = target.model_copy(
             update={
                 "last_crawled_at": crawled_at,
@@ -112,16 +146,24 @@ class _Targets:
                 "updated_at": crawled_at,
             }
         )
+        return True
 
     async def mark_failed(
         self,
         target_id: UUID,
         *,
+        lease_owner: str,
         failed_at: datetime,
         error: str,
         next_retry_at: datetime,
-    ) -> None:
+    ) -> bool:
         target = self._store._targets[target_id]
+        if (
+            target.lease_owner != lease_owner
+            or target.lease_expires_at is None
+            or target.lease_expires_at <= failed_at
+        ):
+            return False
         self._store._targets[target_id] = target.model_copy(
             update={
                 "failure_count": target.failure_count + 1,
@@ -133,6 +175,7 @@ class _Targets:
                 "updated_at": failed_at,
             }
         )
+        return True
 
 
 class _Articles:
@@ -147,9 +190,12 @@ class _Articles:
         article = self._store._articles.get(article_id)
         return article.model_copy(deep=True) if article else None
 
-    async def insert(self, candidate: ArticleCandidate) -> Article:
-        if any(item.url == candidate.url for item in self._store._articles.values()):
-            raise ValueError("article URL already exists")
+    async def insert_or_get(self, candidate: ArticleCandidate) -> Article:
+        existing = next(
+            (item for item in self._store._articles.values() if item.url == candidate.url), None
+        )
+        if existing is not None:
+            return existing.model_copy(deep=True)
         article = Article(id=uuid4(), **candidate.model_dump())
         self._store._articles[article.id] = article
         return article.model_copy(deep=True)
@@ -164,8 +210,15 @@ class _States:
     def __init__(self, store: InMemoryMonitoringStore) -> None:
         self._store = store
 
-    async def find_by_url(self, url: str) -> ArticleCrawlState | None:
-        state = self._store._states.get(url)
+    async def find_by_url(self, target_id: UUID, url: str) -> ArticleCrawlState | None:
+        state = next(
+            (
+                item
+                for item in self._store._states.values()
+                if item.target_id == target_id and item.url == url
+            ),
+            None,
+        )
         return state.model_copy(deep=True) if state else None
 
     async def list_by_target(self, target_id: UUID) -> builtins.list[ArticleCrawlState]:
@@ -177,11 +230,11 @@ class _States:
 
     async def create(self, value: ArticleCrawlStateCreate) -> ArticleCrawlState:
         state = ArticleCrawlState.model_validate(value.model_dump())
-        self._store._states[state.url] = state
+        self._store._states[(state.target_id, state.article_id)] = state
         return state.model_copy(deep=True)
 
     async def save(self, state: ArticleCrawlState) -> ArticleCrawlState:
-        self._store._states[state.url] = state.model_copy(deep=True)
+        self._store._states[(state.target_id, state.article_id)] = state.model_copy(deep=True)
         return state.model_copy(deep=True)
 
     async def recent_changes(
@@ -224,6 +277,28 @@ class _Runs:
         self._store._runs[run.id] = run.model_copy(deep=True)
         return run.model_copy(deep=True)
 
+    async def save_terminal(self, run: CrawlRun) -> bool:
+        current = self._store._runs.get(run.id)
+        if current is None or current.status is not CrawlJobStatus.RUNNING:
+            return False
+        self._store._runs[run.id] = run.model_copy(deep=True)
+        return True
+
+    async def fail_running(self, target_id: UUID, *, completed_at: datetime, error: str) -> int:
+        changed = 0
+        for run_id, run in list(self._store._runs.items()):
+            if run.target_id != target_id or run.status is not CrawlJobStatus.RUNNING:
+                continue
+            self._store._runs[run_id] = run.model_copy(
+                update={
+                    "status": CrawlJobStatus.FAILED,
+                    "completed_at": completed_at,
+                    "error": error,
+                }
+            )
+            changed += 1
+        return changed
+
     async def latest(
         self, *, target_id: UUID | None = None, limit: int = 50
     ) -> builtins.list[CrawlRun]:
@@ -242,7 +317,7 @@ class InMemoryMonitoringStore:
     def __init__(self) -> None:
         self._targets: dict[UUID, CrawlTarget] = {}
         self._articles: dict[UUID, Article] = {}
-        self._states: dict[str, ArticleCrawlState] = {}
+        self._states: dict[tuple[UUID, UUID], ArticleCrawlState] = {}
         self._runs: dict[UUID, CrawlRun] = {}
         self._lock = asyncio.Lock()
         self.targets = _Targets(self)

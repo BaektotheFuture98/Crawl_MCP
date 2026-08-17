@@ -70,6 +70,9 @@ class AdaptiveCrawlerEngine:
         if self._needs_browser(probe):
             return await self._browser.crawl(request, context)
         result = await self._http.crawl(request, context)
-        if not result.items and result.failures:
+        no_successful_output = (
+            not result.items if context.collect_items else result.succeeded_pages == 0
+        )
+        if no_successful_output and result.failures:
             return await self._browser.crawl(request, context)
         return result

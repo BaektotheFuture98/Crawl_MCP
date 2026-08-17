@@ -240,6 +240,7 @@ class CrawlService:
             job_id=job_id,
             domain=validated.hostname,
             adapter_name=extractor.name,
+            collect_items=execution.collect_items if execution is not None else True,
             cache_entries=execution.cache_entries if execution is not None else {},
             page_handler=execution.page_handler if execution is not None else None,
             not_modified_handler=(
@@ -259,6 +260,8 @@ class CrawlService:
                 self._crawl_with_context(safe_request, context, engine),
                 timeout=request.job_timeout_seconds,
             )
+            if not context.collect_items and result.items:
+                result = result.model_copy(update={"items": []})
         except TimeoutError as error:
             self._log.warning("crawl_failed", error_code="NAVIGATION_ERROR", **log_context)
             domain_error = NavigationError(

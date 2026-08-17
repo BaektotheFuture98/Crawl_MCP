@@ -65,18 +65,33 @@ class TargetRepository(Protocol):
         force: bool,
     ) -> CrawlTarget | None: ...
 
+    async def renew_lease(
+        self,
+        target_id: UUID,
+        *,
+        lease_owner: str,
+        now: datetime,
+        lease_seconds: int,
+    ) -> bool: ...
+
     async def mark_succeeded(
-        self, target_id: UUID, *, crawled_at: datetime, next_crawl_at: datetime
-    ) -> None: ...
+        self,
+        target_id: UUID,
+        *,
+        lease_owner: str,
+        crawled_at: datetime,
+        next_crawl_at: datetime,
+    ) -> bool: ...
 
     async def mark_failed(
         self,
         target_id: UUID,
         *,
+        lease_owner: str,
         failed_at: datetime,
         error: str,
         next_retry_at: datetime,
-    ) -> None: ...
+    ) -> bool: ...
 
 
 class ArticleRepository(Protocol):
@@ -84,13 +99,13 @@ class ArticleRepository(Protocol):
 
     async def get_by_id(self, article_id: UUID) -> Article | None: ...
 
-    async def insert(self, candidate: ArticleCandidate) -> Article: ...
+    async def insert_or_get(self, candidate: ArticleCandidate) -> Article: ...
 
     async def update(self, article_id: UUID, candidate: ArticleCandidate) -> Article: ...
 
 
 class ArticleCrawlStateRepository(Protocol):
-    async def find_by_url(self, url: str) -> ArticleCrawlState | None: ...
+    async def find_by_url(self, target_id: UUID, url: str) -> ArticleCrawlState | None: ...
 
     async def list_by_target(self, target_id: UUID) -> builtins.list[ArticleCrawlState]: ...
 
@@ -107,6 +122,10 @@ class CrawlRunRepository(Protocol):
     async def create(self, run: CrawlRunCreate) -> CrawlRun: ...
 
     async def save(self, run: CrawlRun) -> CrawlRun: ...
+
+    async def save_terminal(self, run: CrawlRun) -> bool: ...
+
+    async def fail_running(self, target_id: UUID, *, completed_at: datetime, error: str) -> int: ...
 
     async def latest(
         self, *, target_id: UUID | None = None, limit: int = 50

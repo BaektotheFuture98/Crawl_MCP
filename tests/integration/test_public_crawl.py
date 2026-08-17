@@ -13,6 +13,7 @@ from crawling_mcp.domain.models import (
     CrawlCacheEntry,
     CrawlContext,
     CrawlRequest,
+    PageItem,
     PageSnapshot,
     ScrapePageRequest,
 )
@@ -24,6 +25,31 @@ def make_engine() -> HttpCrawlerEngine:
     extractors = ExtractorRegistry(default=GenericExtractor())
     extractors.register("127.0.0.1", ExampleExtractor())
     return HttpCrawlerEngine(validator=validator, extractors=extractors, router=PageRouter())
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_page_handler_failure_propagates_to_caller(test_site_url: str) -> None:
+    async def fail_persistence(snapshot: PageSnapshot, items: list[PageItem]) -> None:
+        del snapshot, items
+        raise ConnectionError("database unavailable")
+
+    with pytest.raises(ConnectionError, match="database unavailable"):
+        await make_engine().crawl(
+            CrawlRequest(
+                start_url=f"{test_site_url}/test-site/login",
+                crawl_mode="http",
+                max_pages=1,
+                max_depth=0,
+                max_request_retries=0,
+                respect_robots_txt=False,
+                request_delay_seconds=0,
+            ),
+            CrawlContext(
+                domain="127.0.0.1",
+                page_handler=fail_persistence,
+            ),
+        )
 
 
 @pytest.mark.integration
@@ -96,3 +122,36 @@ async def test_http_conditional_request_returns_not_modified_observation(
     assert second.status_code == 304
     assert second.not_modified
     assert observed == [second]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_not_modified_handler_failure_propagates_to_caller(
+    test_site_url: str,
+) -> None:
+    engine = make_engine()
+    url = f"{test_site_url}/test-site/cacheable"
+    first = await engine.scrape(
+        ScrapePageRequest(url=url, crawl_mode="http"),
+        CrawlContext(domain="127.0.0.1"),
+    )
+
+    async def fail_persistence(snapshot: PageSnapshot) -> None:
+        del snapshot
+        raise ConnectionError("database unavailable")
+
+    with pytest.raises(ConnectionError, match="database unavailable"):
+        await engine.scrape(
+            ScrapePageRequest(url=url, crawl_mode="http"),
+            CrawlContext(
+                domain="127.0.0.1",
+                cache_entries={
+                    url: CrawlCacheEntry(
+                        url=url,
+                        etag=first.headers["etag"],
+                        last_modified=first.headers["last-modified"],
+                    )
+                },
+                not_modified_handler=fail_persistence,
+            ),
+        )

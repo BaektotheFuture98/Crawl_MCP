@@ -6,7 +6,6 @@ from uuid import UUID
 import structlog
 
 from crawling_mcp.domain.articles import (
-    ArticleCrawlState,
     ArticleCrawlStateCreate,
     ArticleObservation,
     ArticlePersistenceResult,
@@ -38,28 +37,15 @@ class ArticlePersistenceService:
     ) -> ArticlePersistenceResult:
         candidate = self._detector.canonicalize(observation.candidate)
         async with self._uow_factory() as uow:
-            article = await uow.articles.find_by_url(candidate.url)
-            state = await uow.states.find_by_url(candidate.url)
-            previous = state
-            if article is not None and previous is None:
-                previous = ArticleCrawlState(
-                    article_id=article.id,
-                    target_id=target_id,
-                    url=candidate.url,
-                    content_hash=self._detector.fingerprint(article.as_candidate()),
-                    first_seen_at=observed_at,
-                    last_seen_at=observed_at,
-                )
-
-            detection = self._detector.detect(previous, candidate)
-            if article is None:
-                article = await uow.articles.insert(detection.candidate)
-                change_type = ChangeType.NEW
-            elif detection.change_type is ChangeType.UPDATED:
+            article = await uow.articles.insert_or_get(candidate)
+            state = await uow.states.find_by_url(target_id, candidate.url)
+            detection = self._detector.detect(state, candidate)
+            article_changed = (
+                self._detector.fingerprint(article.as_candidate()) != detection.content_hash
+            )
+            if article_changed:
                 article = await uow.articles.update(article.id, detection.candidate)
-                change_type = ChangeType.UPDATED
-            else:
-                change_type = ChangeType.UNCHANGED
+            change_type = detection.change_type
 
             if state is None:
                 state = await uow.states.create(
@@ -86,7 +72,6 @@ class ArticlePersistenceService:
                 )
             else:
                 updates: dict[str, object] = {
-                    "target_id": target_id,
                     "last_seen_at": observed_at,
                     "etag": observation.etag or state.etag,
                     "last_modified": observation.last_modified or state.last_modified,

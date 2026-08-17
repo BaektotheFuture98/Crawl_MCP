@@ -88,6 +88,14 @@ class ObservingEngine(FakeEngine):
         )
 
 
+class StreamingEngine(ObservingEngine):
+    async def crawl(self, request: CrawlRequest, context: CrawlContext) -> CrawlResult:
+        result = await super().crawl(request, context)
+        if context.collect_items:
+            return result
+        return result.model_copy(update={"items": []})
+
+
 class FakeFactory:
     def __init__(self, engine: FakeEngine) -> None:
         self.engine = engine
@@ -260,3 +268,31 @@ async def test_worker_execution_does_not_persist_generic_result_body() -> None:
 
     assert result.items[0].content == "body"
     assert await repository.get_job(result.job_id) is None
+
+
+@pytest.mark.asyncio
+async def test_streaming_execution_delivers_pages_without_collecting_result_items() -> None:
+    observed: list[PageItem] = []
+
+    async def observe(snapshot: PageSnapshot, items: list[PageItem]) -> None:
+        del snapshot
+        observed.extend(items)
+
+    service = CrawlService(
+        validator=RecordingValidator(),
+        factory=FakeFactory(StreamingEngine()),
+        extractors=ExtractorRegistry(default=GenericExtractor()),
+        repository=InMemoryRepository(),
+    )
+
+    result = await service.crawl_site(
+        CrawlRequest(start_url="https://example.com"),
+        execution=CrawlExecution(
+            persist_result=False,
+            collect_items=False,
+            page_handler=observe,
+        ),
+    )
+
+    assert [item.title for item in observed] == ["Observed"]
+    assert result.items == []

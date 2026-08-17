@@ -25,11 +25,14 @@ class PostgresArticleCrawlStateRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def find_by_url(self, url: str) -> ArticleCrawlState | None:
+    async def find_by_url(self, target_id: UUID, url: str) -> ArticleCrawlState | None:
         row = (
             (
                 await self._session.execute(
-                    sa.select(article_crawl_state).where(article_crawl_state.c.url == url)
+                    sa.select(article_crawl_state).where(
+                        article_crawl_state.c.target_id == target_id,
+                        article_crawl_state.c.url == url,
+                    )
                 )
             )
             .mappings()
@@ -76,7 +79,10 @@ class PostgresArticleCrawlStateRepository:
             (
                 await self._session.execute(
                     sa.update(article_crawl_state)
-                    .where(article_crawl_state.c.article_id == state.article_id)
+                    .where(
+                        article_crawl_state.c.target_id == state.target_id,
+                        article_crawl_state.c.article_id == state.article_id,
+                    )
                     .values(**values)
                     .returning(article_crawl_state)
                 )

@@ -169,6 +169,7 @@ class BrowserCrawlerEngine:
         result_lock = asyncio.Lock()
         pace_lock = asyncio.Lock()
         next_request_at = 0.0
+        callback_errors: list[Exception] = []
 
         async def pace() -> None:
             nonlocal next_request_at
@@ -209,9 +210,14 @@ class BrowserCrawlerEngine:
                 snapshot.page_type = self._router.classify(snapshot, domain=context.domain)
                 items = await extractor.extract(snapshot)
                 if context.page_handler is not None:
-                    await context.page_handler(snapshot, items)
+                    try:
+                        await context.page_handler(snapshot, items)
+                    except Exception as error:
+                        callback_errors.append(error)
+                        return
                 async with result_lock:
-                    result.items.extend(items)
+                    if context.collect_items:
+                        result.items.extend(items)
                     result.visited_pages += 1
                     result.succeeded_pages += 1
                 for link in self._router.links(snapshot, domain=context.domain):
@@ -270,6 +276,8 @@ class BrowserCrawlerEngine:
             for task in workers:
                 task.cancel()
             await asyncio.gather(*workers, return_exceptions=True)
+        if callback_errors:
+            raise callback_errors[0]
         return result
 
     async def crawl(self, request: CrawlRequest, context: CrawlContext) -> CrawlResult:
