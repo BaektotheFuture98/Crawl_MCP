@@ -73,9 +73,10 @@ article_crawl_state = sa.Table(
         "target_id",
         uuid_type,
         sa.ForeignKey("crawl_target.id", ondelete="CASCADE"),
+        primary_key=True,
         nullable=False,
     ),
-    sa.Column("url", sa.Text(), nullable=False, unique=True),
+    sa.Column("url", sa.Text(), nullable=False),
     sa.Column("content_hash", sa.String(64), nullable=False),
     sa.Column("etag", sa.Text(), nullable=True),
     sa.Column("last_modified", sa.Text(), nullable=True),
@@ -83,6 +84,7 @@ article_crawl_state = sa.Table(
     sa.Column("last_seen_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("last_changed_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("last_change_type", sa.String(16), nullable=True),
+    sa.UniqueConstraint("target_id", "url", name="uq_article_crawl_state_target_url"),
 )
 sa.Index(
     "ix_article_crawl_state_recent",

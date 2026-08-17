@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import UTC, datetime
 
@@ -152,5 +153,63 @@ async def test_postgres_monitoring_service_records_article_state_and_run() -> No
         assert runs[0].new_articles == 1
         assert changes[0].title == "기사 제목"
         assert "content" not in changes[0].model_dump()
+    finally:
+        await store.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_concurrent_targets_share_article_but_keep_independent_state() -> None:
+    require_storage_test()
+    engine = create_async_engine(_DSN)
+    store = PostgresMonitoringStore(engine)
+    try:
+        await clean(engine)
+        async with store() as uow:
+            first_target = await uow.targets.create(
+                CrawlTargetCreate(url="https://example.com/feed-a", interval_seconds=60)
+            )
+            second_target = await uow.targets.create(
+                CrawlTargetCreate(url="https://example.com/feed-b", interval_seconds=60)
+            )
+            await uow.commit()
+        service = ArticlePersistenceService(uow_factory=store)
+        candidate = ArticleCandidate(
+            url="https://example.com/shared",
+            title="공유 기사",
+            content="공유 본문",
+        )
+        observed_at = datetime(2026, 8, 10, tzinfo=UTC)
+
+        first, second = await asyncio.gather(
+            service.persist(
+                target_id=first_target.id,
+                observation=ArticleObservation(candidate=candidate, etag='"a"'),
+                observed_at=observed_at,
+            ),
+            service.persist(
+                target_id=second_target.id,
+                observation=ArticleObservation(candidate=candidate, etag='"b"'),
+                observed_at=observed_at,
+            ),
+        )
+
+        assert first.article_id == second.article_id
+        assert first.change_type is ChangeType.NEW
+        assert second.change_type is ChangeType.NEW
+        async with engine.connect() as connection:
+            article_count = await connection.scalar(sa.text("SELECT count(*) FROM article"))
+            state_rows = (
+                await connection.execute(
+                    sa.text(
+                        "SELECT target_id, etag FROM article_crawl_state "
+                        "WHERE article_id = :article_id ORDER BY target_id"
+                    ),
+                    {"article_id": first.article_id},
+                )
+            ).all()
+        assert article_count == 1
+        assert {row.target_id for row in state_rows} == {first_target.id, second_target.id}
+        assert {row.etag for row in state_rows} == {'"a"', '"b"'}
     finally:
         await store.close()
