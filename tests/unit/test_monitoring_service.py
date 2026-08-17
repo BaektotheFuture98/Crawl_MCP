@@ -36,6 +36,7 @@ class FakeRunner:
             raise TimeoutError
         assert execution is not None
         assert execution.persist_result is False
+        assert execution.collect_items is False
         body = self.contents.get(request.start_url, "기사 본문")
         snapshot = PageSnapshot(
             url=request.start_url,
@@ -72,6 +73,20 @@ class MutableClock:
 
     def __call__(self) -> datetime:
         return self.value
+
+
+class InspectingRunner(FakeRunner):
+    def __init__(self, store: InMemoryMonitoringStore) -> None:
+        super().__init__()
+        self._store = store
+        self.persisted_before_return = False
+
+    async def crawl_site(
+        self, request: CrawlRequest, *, execution: CrawlExecution | None = None
+    ) -> CrawlResult:
+        result = await super().crawl_site(request, execution=execution)
+        self.persisted_before_return = bool(self._store._articles)
+        return result
 
 
 def service(store: InMemoryMonitoringStore, runner: FakeRunner, now: datetime) -> MonitoringService:
@@ -237,3 +252,19 @@ async def test_long_running_target_renews_its_lease() -> None:
     assert takeover is None
     runner.release.set()
     assert await task is not None
+
+
+@pytest.mark.asyncio
+async def test_page_observation_is_persisted_before_crawl_returns() -> None:
+    now = datetime(2026, 8, 10, 1, 0, tzinfo=UTC)
+    store = InMemoryMonitoringStore()
+    runner = InspectingRunner(store)
+    async with store() as uow:
+        target = await uow.targets.create(
+            CrawlTargetCreate(url="https://example.com/stream", interval_seconds=60)
+        )
+
+    result = await service(store, runner, now).run_target(target.id, force=True)
+
+    assert result is not None and result.new_articles == 1
+    assert runner.persisted_before_return

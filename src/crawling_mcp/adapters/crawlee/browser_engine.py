@@ -211,7 +211,8 @@ class BrowserCrawlerEngine:
                 if context.page_handler is not None:
                     await context.page_handler(snapshot, items)
                 async with result_lock:
-                    result.items.extend(items)
+                    if context.collect_items:
+                        result.items.extend(items)
                     result.visited_pages += 1
                     result.succeeded_pages += 1
                 for link in self._router.links(snapshot, domain=context.domain):

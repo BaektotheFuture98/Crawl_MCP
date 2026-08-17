@@ -102,6 +102,7 @@ class CrawlExecution(BaseModel):
 
     job_id: UUID | None = None
     persist_result: bool = True
+    collect_items: bool = True
     cache_entries: dict[str, CrawlCacheEntry] = Field(default_factory=dict)
     page_handler: Callable[[PageSnapshot, list[PageItem]], Awaitable[None]] | None = Field(
         default=None, exclude=True, repr=False
@@ -163,6 +164,7 @@ class CrawlContext(BaseModel):
     adapter_name: str = "generic"
     authenticated: bool = False
     browser_context: Any | None = None
+    collect_items: bool = True
     cache_entries: dict[str, CrawlCacheEntry] = Field(default_factory=dict)
     page_handler: Callable[[PageSnapshot, list[PageItem]], Awaitable[None]] | None = Field(
         default=None, exclude=True, repr=False

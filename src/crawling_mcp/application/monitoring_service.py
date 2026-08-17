@@ -98,19 +98,94 @@ class MonitoringService:
             states = await uow.states.list_by_target(target.id)
             await uow.commit()
 
-        observed: list[PageSnapshot] = []
-        not_modified: list[PageSnapshot] = []
+        counters = {ChangeType.NEW: 0, ChangeType.UPDATED: 0, ChangeType.UNCHANGED: 0}
+        extraction_failures = 0
+        processed_urls: set[str] = set()
+        processed_lock = asyncio.Lock()
+        counter_lock = asyncio.Lock()
+
+        async def reserve(url: str) -> bool:
+            async with processed_lock:
+                if url in processed_urls:
+                    return False
+                processed_urls.add(url)
+                return True
+
+        async def release(url: str) -> None:
+            async with processed_lock:
+                processed_urls.discard(url)
 
         async def observe(snapshot: PageSnapshot, items: list[PageItem]) -> None:
             del items
-            observed.append(snapshot.model_copy(deep=True))
+            nonlocal extraction_failures
+            domain = (urlsplit(snapshot.url).hostname or "").lower().rstrip(".")
+            extractor = self._article_extractors.get(domain)
+            try:
+                candidates = await extractor.extract_articles(snapshot)
+            except Exception as error:
+                async with counter_lock:
+                    extraction_failures += 1
+                self._log.warning(
+                    "article_extraction_failed",
+                    target_id=str(target.id),
+                    crawl_run_id=str(run.id),
+                    url=snapshot.url,
+                    extractor=extractor.name,
+                    error_type=type(error).__name__,
+                )
+                return
+            for candidate in candidates:
+                canonical = normalize_url(candidate.url, remove_tracking=True)
+                if not await reserve(canonical):
+                    continue
+                try:
+                    persistence_result = await self._article_persistence.persist(
+                        target_id=target.id,
+                        observation=ArticleObservation(
+                            candidate=candidate,
+                            etag=snapshot.headers.get("etag"),
+                            last_modified=snapshot.headers.get("last-modified"),
+                        ),
+                        observed_at=self._clock(),
+                    )
+                except Exception:
+                    await release(canonical)
+                    raise
+                async with counter_lock:
+                    counters[persistence_result.change_type] += 1
 
         async def observe_not_modified(snapshot: PageSnapshot) -> None:
-            not_modified.append(snapshot.model_copy(deep=True))
+            url = normalize_url(snapshot.url, remove_tracking=True)
+            if not await reserve(url):
+                return
+            try:
+                async with self._uow_factory() as uow:
+                    state = await uow.states.find_by_url(target.id, url)
+                    if state is None:
+                        await release(url)
+                        return
+                    await uow.states.save(
+                        state.model_copy(
+                            update={
+                                "last_seen_at": self._clock(),
+                                "etag": snapshot.headers.get("etag") or state.etag,
+                                "last_modified": (
+                                    snapshot.headers.get("last-modified") or state.last_modified
+                                ),
+                            }
+                        )
+                    )
+                    await uow.commit()
+            except Exception:
+                await release(url)
+                raise
+            async with counter_lock:
+                counters[ChangeType.UNCHANGED] += 1
 
         execution = CrawlExecution(
             job_id=run.id,
             persist_result=False,
+            collect_items=False,
             cache_entries={
                 state.url: CrawlCacheEntry(
                     url=state.url,
@@ -145,64 +220,6 @@ class MonitoringService:
             )
             if lease_lost.is_set():
                 raise LeaseLostError("target lease was lost during crawling")
-            counters = {ChangeType.NEW: 0, ChangeType.UPDATED: 0, ChangeType.UNCHANGED: 0}
-            processed_urls: set[str] = set()
-            seen_at = self._clock()
-
-            for snapshot in not_modified:
-                url = normalize_url(snapshot.url, remove_tracking=True)
-                async with self._uow_factory() as uow:
-                    state = await uow.states.find_by_url(target.id, url)
-                    if state is None:
-                        continue
-                    await uow.states.save(
-                        state.model_copy(
-                            update={
-                                "last_seen_at": seen_at,
-                                "etag": snapshot.headers.get("etag") or state.etag,
-                                "last_modified": (
-                                    snapshot.headers.get("last-modified") or state.last_modified
-                                ),
-                            }
-                        )
-                    )
-                    await uow.commit()
-                processed_urls.add(url)
-                counters[ChangeType.UNCHANGED] += 1
-
-            extraction_failures = 0
-            for snapshot in observed:
-                domain = (urlsplit(snapshot.url).hostname or "").lower().rstrip(".")
-                extractor = self._article_extractors.get(domain)
-                try:
-                    candidates = await extractor.extract_articles(snapshot)
-                except Exception as error:
-                    extraction_failures += 1
-                    self._log.warning(
-                        "article_extraction_failed",
-                        target_id=str(target.id),
-                        crawl_run_id=str(run.id),
-                        url=snapshot.url,
-                        extractor=extractor.name,
-                        error_type=type(error).__name__,
-                    )
-                    continue
-                for candidate in candidates:
-                    canonical = normalize_url(candidate.url, remove_tracking=True)
-                    if canonical in processed_urls:
-                        continue
-                    processed_urls.add(canonical)
-                    persistence_result = await self._article_persistence.persist(
-                        target_id=target.id,
-                        observation=ArticleObservation(
-                            candidate=candidate,
-                            etag=snapshot.headers.get("etag"),
-                            last_modified=snapshot.headers.get("last-modified"),
-                        ),
-                        observed_at=seen_at,
-                    )
-                    counters[persistence_result.change_type] += 1
-
             completed_at = self._clock()
             failed_pages = crawl_result.failed_pages + extraction_failures
             completed = run.model_copy(

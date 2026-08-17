@@ -230,7 +230,8 @@ class HttpCrawlerEngine:
             items = await extractor.extract(snapshot)
             if context.page_handler is not None:
                 await context.page_handler(snapshot, items)
-            result.items.extend(items)
+            if context.collect_items:
+                result.items.extend(items)
             result.visited_pages += 1
             result.succeeded_pages += 1
             if request.request_delay_seconds:
