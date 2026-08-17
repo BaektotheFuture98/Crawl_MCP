@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import pytest
 
@@ -11,7 +12,8 @@ from crawling_mcp.adapters.article_extractors import (
 )
 from crawling_mcp.adapters.storage.monitoring_memory import InMemoryMonitoringStore
 from crawling_mcp.application.article_persistence_service import ArticlePersistenceService
-from crawling_mcp.application.monitoring_service import MonitoringService
+from crawling_mcp.application.monitoring_service import LeaseLostError, MonitoringService
+from crawling_mcp.domain.enums import CrawlJobStatus
 from crawling_mcp.domain.models import (
     CrawlExecution,
     CrawlRequest,
@@ -87,6 +89,34 @@ class InspectingRunner(FakeRunner):
         result = await super().crawl_site(request, execution=execution)
         self.persisted_before_return = bool(self._store._articles)
         return result
+
+
+class TakeoverRunner(FakeRunner):
+    def __init__(
+        self,
+        store: InMemoryMonitoringStore,
+        target_id: UUID,
+        clock: MutableClock,
+    ) -> None:
+        super().__init__()
+        self._store = store
+        self._target_id = target_id
+        self._clock = clock
+
+    async def crawl_site(
+        self, request: CrawlRequest, *, execution: CrawlExecution | None = None
+    ) -> CrawlResult:
+        self._clock.value += timedelta(seconds=2)
+        async with self._store() as uow:
+            reclaimed = await uow.targets.claim(
+                self._target_id,
+                now=self._clock(),
+                lease_owner="replacement-worker",
+                lease_seconds=60,
+                force=True,
+            )
+        assert reclaimed is not None
+        return await super().crawl_site(request, execution=execution)
 
 
 def service(store: InMemoryMonitoringStore, runner: FakeRunner, now: datetime) -> MonitoringService:
@@ -268,3 +298,85 @@ async def test_page_observation_is_persisted_before_crawl_returns() -> None:
 
     assert result is not None and result.new_articles == 1
     assert runner.persisted_before_return
+
+
+@pytest.mark.asyncio
+async def test_lost_lease_blocks_finalization_and_next_claim_recovers_run() -> None:
+    started_at = datetime(2026, 8, 10, 1, 0, tzinfo=UTC)
+    clock = MutableClock(started_at)
+    store = InMemoryMonitoringStore()
+    async with store() as uow:
+        target = await uow.targets.create(
+            CrawlTargetCreate(url="https://example.com/takeover", interval_seconds=60)
+        )
+    stale_monitoring = MonitoringService(
+        crawler=TakeoverRunner(store, target.id, clock),
+        article_extractors=ArticleExtractorRegistry(default=StructuredArticleExtractor()),
+        article_persistence=ArticlePersistenceService(uow_factory=store),
+        uow_factory=store,
+        clock=clock,
+        lease_seconds=1,
+        heartbeat_interval_seconds=60,
+    )
+
+    with pytest.raises(LeaseLostError):
+        await stale_monitoring.run_target(target.id, force=True)
+
+    async with store() as uow:
+        after_takeover = await uow.targets.get(target.id)
+        stale_runs = await uow.runs.latest(target_id=target.id)
+    assert after_takeover is not None
+    assert after_takeover.lease_owner == "replacement-worker"
+    assert after_takeover.failure_count == 0
+    assert stale_runs[0].status is CrawlJobStatus.RUNNING
+
+    clock.value += timedelta(seconds=61)
+    recovered = await service(store, FakeRunner(), clock()).run_target(target.id, force=True)
+
+    assert recovered is not None
+    async with store() as uow:
+        runs = await uow.runs.latest(target_id=target.id)
+    assert [run.status for run in runs] == [
+        CrawlJobStatus.COMPLETED,
+        CrawlJobStatus.FAILED,
+    ]
+    assert runs[1].error == "lease_expired"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_storage_failure_fails_closed() -> None:
+    now = datetime(2026, 8, 10, 1, 0, tzinfo=UTC)
+    store = InMemoryMonitoringStore()
+    runner = BlockingRunner()
+    async with store() as uow:
+        target = await uow.targets.create(
+            CrawlTargetCreate(url="https://example.com/heartbeat", interval_seconds=60)
+        )
+
+    async def fail_renewal(*args: object, **kwargs: object) -> bool:
+        del args, kwargs
+        raise ConnectionError("storage unavailable")
+
+    store.targets.renew_lease = fail_renewal  # type: ignore[method-assign]
+    monitoring = MonitoringService(
+        crawler=runner,
+        article_extractors=ArticleExtractorRegistry(default=StructuredArticleExtractor()),
+        article_persistence=ArticlePersistenceService(uow_factory=store),
+        uow_factory=store,
+        clock=lambda: now,
+        lease_seconds=60,
+        heartbeat_interval_seconds=0.01,
+    )
+    task = asyncio.create_task(monitoring.run_target(target.id, force=True))
+    await runner.started.wait()
+    await asyncio.sleep(0.03)
+    runner.release.set()
+
+    with pytest.raises(LeaseLostError):
+        await task
+
+    async with store() as uow:
+        failed_target = await uow.targets.get(target.id)
+        runs = await uow.runs.latest(target_id=target.id)
+    assert failed_target is not None and failed_target.failure_count == 1
+    assert runs[0].status is CrawlJobStatus.FAILED

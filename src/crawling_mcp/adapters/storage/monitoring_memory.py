@@ -284,9 +284,7 @@ class _Runs:
         self._store._runs[run.id] = run.model_copy(deep=True)
         return True
 
-    async def fail_running(
-        self, target_id: UUID, *, completed_at: datetime, error: str
-    ) -> int:
+    async def fail_running(self, target_id: UUID, *, completed_at: datetime, error: str) -> int:
         changed = 0
         for run_id, run in list(self._store._runs.items()):
             if run.target_id != target_id or run.status is not CrawlJobStatus.RUNNING:

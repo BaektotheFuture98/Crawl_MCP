@@ -339,14 +339,26 @@ class MonitoringService:
             interval = max(lease_seconds / 3, 0.1)
         while True:
             await asyncio.sleep(interval)
-            async with self._uow_factory() as uow:
-                renewed = await uow.targets.renew_lease(
-                    target_id,
+            try:
+                async with self._uow_factory() as uow:
+                    renewed = await uow.targets.renew_lease(
+                        target_id,
+                        lease_owner=lease_owner,
+                        now=self._clock(),
+                        lease_seconds=lease_seconds,
+                    )
+                    await uow.commit()
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                self._log.error(
+                    "crawl_target_heartbeat_failed",
+                    target_id=str(target_id),
                     lease_owner=lease_owner,
-                    now=self._clock(),
-                    lease_seconds=lease_seconds,
+                    error_type=type(error).__name__,
                 )
-                await uow.commit()
+                lease_lost.set()
+                return
             if not renewed:
                 lease_lost.set()
                 return

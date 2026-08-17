@@ -21,6 +21,8 @@ from crawling_mcp.domain.models import (
     CrawlContext,
     CrawlRequest,
     Credentials,
+    PageItem,
+    PageSnapshot,
     ScrapePageRequest,
 )
 from crawling_mcp.infrastructure.artifacts import FailureArtifactWriter
@@ -153,6 +155,38 @@ async def test_authenticated_list_traverses_detail_links(
             )
         assert len(result.items) == 3
         assert {item.metadata.get("id") for item in result.items} >= {"1", "2"}
+    finally:
+        await browser.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_browser_page_handler_failure_propagates_to_caller(
+    test_site_url: str, tmp_path: Path
+) -> None:
+    browser, _, engine, _ = make_auth_stack(test_site_url, tmp_path)
+
+    async def fail_persistence(snapshot: PageSnapshot, items: list[PageItem]) -> None:
+        del snapshot, items
+        raise ConnectionError("database unavailable")
+
+    await browser.start()
+    try:
+        with pytest.raises(ConnectionError, match="database unavailable"):
+            await engine.crawl(
+                CrawlRequest(
+                    start_url=f"{test_site_url}/test-site/login",
+                    crawl_mode="browser",
+                    max_pages=1,
+                    max_depth=0,
+                    request_delay_seconds=0,
+                    respect_robots_txt=False,
+                ),
+                CrawlContext(
+                    domain="127.0.0.1",
+                    page_handler=fail_persistence,
+                ),
+            )
     finally:
         await browser.close()
 

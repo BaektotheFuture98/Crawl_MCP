@@ -49,12 +49,16 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    duplicate = op.get_bind().execute(
-        sa.text(
-            "SELECT article_id, count(*) FROM article_crawl_state "
-            "GROUP BY article_id HAVING count(*) > 1 LIMIT 1"
+    duplicate = (
+        op.get_bind()
+        .execute(
+            sa.text(
+                "SELECT article_id, count(*) FROM article_crawl_state "
+                "GROUP BY article_id HAVING count(*) > 1 LIMIT 1"
+            )
         )
-    ).first()
+        .first()
+    )
     if duplicate is not None:
         raise RuntimeError(
             "cannot restore global article state while an article belongs to multiple targets: "

@@ -47,7 +47,7 @@ def test_only_crawler_owned_uuid_ids_have_database_defaults() -> None:
 def test_article_state_identity_is_scoped_to_target_and_article() -> None:
     state = metadata.tables["article_crawl_state"]
 
-    assert {column.name for column in state.primary_key.columns} == {"target_id", "article_id"}
+    assert [column.name for column in state.primary_key.columns] == ["target_id", "article_id"]
     unique_column_sets = {
         tuple(column.name for column in constraint.columns)
         for constraint in state.constraints

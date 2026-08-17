@@ -41,6 +41,19 @@ async def clean(engine: object) -> None:
         )
 
 
+async def run_alembic(*arguments: str) -> None:
+    process = await asyncio.create_subprocess_exec(
+        "uv",
+        "run",
+        "alembic",
+        *arguments,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    assert process.returncode == 0, (stdout + stderr).decode()
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_postgres_article_persistence_uses_one_uuidv7_article_row() -> None:
@@ -295,3 +308,87 @@ async def test_postgres_lease_fencing_and_stale_run_recovery() -> None:
         assert runs[0].error == "lease_expired"
     finally:
         await store.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_target_scoped_state_migration_preserves_existing_row() -> None:
+    require_storage_test()
+    engine = create_async_engine(_DSN)
+    try:
+        await clean(engine)
+    finally:
+        await engine.dispose()
+
+    await run_alembic("downgrade", "20260810_01")
+    try:
+        observed_at = datetime(2026, 8, 10, tzinfo=UTC)
+        engine = create_async_engine(_DSN)
+        try:
+            async with engine.begin() as connection:
+                target_id = await connection.scalar(
+                    sa.text(
+                        "INSERT INTO crawl_target (url, interval_seconds, crawl_mode) "
+                        "VALUES (:url, 60, 'http') RETURNING id"
+                    ),
+                    {"url": "https://example.com/migrated-target"},
+                )
+                article_id = await connection.scalar(
+                    sa.text(
+                        "INSERT INTO article (ar_title, ar_content, url) "
+                        "VALUES ('기존 기사', '기존 본문', :url) RETURNING id"
+                    ),
+                    {"url": "https://example.com/migrated-article"},
+                )
+                await connection.execute(
+                    sa.text(
+                        "INSERT INTO article_crawl_state "
+                        "(article_id, target_id, url, content_hash, etag, "
+                        "first_seen_at, last_seen_at, last_change_type) "
+                        "VALUES (:article_id, :target_id, :url, :content_hash, :etag, "
+                        ":observed_at, :observed_at, 'NEW')"
+                    ),
+                    {
+                        "article_id": article_id,
+                        "target_id": target_id,
+                        "url": "https://example.com/migrated-article",
+                        "content_hash": "a" * 64,
+                        "etag": '"before-migration"',
+                        "observed_at": observed_at,
+                    },
+                )
+        finally:
+            await engine.dispose()
+
+        await run_alembic("upgrade", "head")
+        engine = create_async_engine(_DSN)
+        try:
+            async with engine.connect() as connection:
+                preserved = (
+                    await connection.execute(
+                        sa.text(
+                            "SELECT target_id, article_id, etag FROM article_crawl_state "
+                            "WHERE target_id = :target_id AND article_id = :article_id"
+                        ),
+                        {"target_id": target_id, "article_id": article_id},
+                    )
+                ).one()
+                constraints = await connection.run_sync(
+                    lambda sync_connection: (
+                        sa.inspect(sync_connection).get_pk_constraint("article_crawl_state"),
+                        sa.inspect(sync_connection).get_unique_constraints("article_crawl_state"),
+                    )
+                )
+        finally:
+            await engine.dispose()
+
+        primary_key, unique_constraints = constraints
+        assert preserved.target_id == target_id
+        assert preserved.article_id == article_id
+        assert preserved.etag == '"before-migration"'
+        assert primary_key["constrained_columns"] == ["target_id", "article_id"]
+        assert any(
+            constraint["column_names"] == ["target_id", "url"] for constraint in unique_constraints
+        )
+    finally:
+        await run_alembic("upgrade", "head")

@@ -125,9 +125,7 @@ class CrawlRunRepository(Protocol):
 
     async def save_terminal(self, run: CrawlRun) -> bool: ...
 
-    async def fail_running(
-        self, target_id: UUID, *, completed_at: datetime, error: str
-    ) -> int: ...
+    async def fail_running(self, target_id: UUID, *, completed_at: datetime, error: str) -> int: ...
 
     async def latest(
         self, *, target_id: UUID | None = None, limit: int = 50

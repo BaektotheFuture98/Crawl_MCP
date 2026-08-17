@@ -80,9 +80,7 @@ class PostgresCrawlRunRepository:
         )
         return updated.scalar_one_or_none() is not None
 
-    async def fail_running(
-        self, target_id: UUID, *, completed_at: datetime, error: str
-    ) -> int:
+    async def fail_running(self, target_id: UUID, *, completed_at: datetime, error: str) -> int:
         updated = await self._session.execute(
             sa.update(crawl_run)
             .where(
